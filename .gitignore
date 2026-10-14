@@ -1,0 +1,13 @@
+# Ignore caches
+**__pycache__/
+**.DS_Store
+gitignore/
+
+# Ignore cache
+cache/*/
+cache_osf
+DANDI_API_KEY.txt
+
+# Illustrator autosave/scratch files
+**~ai*.tmp
+
