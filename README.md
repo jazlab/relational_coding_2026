@@ -1,7 +1,5 @@
 # A Relational Code for Objects in Primate Frontal Cortex
 
-<!-- TODO: fill in the OSF URL, the cache archive name and the citation below. -->
-
 This repository contains the code and points to the data behind the paper
 "A Relational Code for Objects in Primate Frontal Cortex" (Watters et al., 2026). The paper uses neurophysiology data
 recorded in the frontal cortex (DMFC and FEF) of two monkeys, Monkey P (`Perle`)
@@ -17,6 +15,11 @@ working with the data yourself.
 349, 1156, 402 and 465). Each trial: fixation, two objects shown, a delay with the objects hidden, a cue identifying
 one object, then the monkey's saccade to where it remembers that object. The
 green cross is the monkey's gaze.*
+
+**See and hear the neurons:** [this video](https://www.youtube.com/shorts/UOXXZGnV6HQ)
+replays the same trials with three neurons recorded during them (Monkey P, neurons 105,
+119 and 142). Each neuron's spikes are drawn on screen and played as clicks, so turn the
+sound on.
 
 ## Repository layout
 
@@ -92,7 +95,8 @@ Each of the following needs only one session. Download it with
 - **Replay trials**: `data_exploration/task_visualization/demo_replay_trial.ipynb`
   writes the gif above to `data_exploration/task_visualization/gifs/`.
   `demo_replay_trials_with_neurons.ipynb` makes a video of several trials with
-  spikes from a few neurons played as clicks.
+  spikes from a few neurons played as clicks (the
+  [video above](https://www.youtube.com/shorts/UOXXZGnV6HQ)).
 - **Plot a neuron's PSTH**: `data_exploration/psths/demo.ipynb`. To plot every
   single unit, run `python run_ring.py` in that directory; the PDFs go to
   `cache/data_exploration/psths/`.
@@ -110,8 +114,9 @@ The figures read intermediate results from `cache/`. There are two ways to fill 
 
 ### Option A: download the precomputed caches
 
-Download `CACHE_ARCHIVE_NAME` from OSF at OSF_URL, unzip it, and move its
-contents into `cache/`. It contains `behavior_processing/` and `figures/`.
+Download `relational_coding_2026_cache.zip` (about 200 MB) from OSF at
+https://osf.io/8vmqg and unzip it in the repository root. It unpacks into
+`cache/behavior_processing/` and `cache/figures/`.
 After this you can skip straight to "Reproducing the figures". The
 figures that use neural data still need the DANDI spike-sorting files.
 
@@ -194,8 +199,5 @@ limitations or challenges that might arise.
 ## Reference
 
 If you use our data or code (or a derivative of our data or code) in your work,
-please cite it as follows:
-
-```
-CITATION (BibTeX)
-```
+please cite the paper: Watters et al. (2026), "A Relational Code for Objects in
+Primate Frontal Cortex". A BibTeX entry will be added here once it is published.

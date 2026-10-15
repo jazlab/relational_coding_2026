@@ -11,8 +11,5 @@ DANDI_API_KEY.txt
 # Illustrator autosave/scratch files
 **~ai*.tmp
 
-gitignore_cache/
-
-
-# Notes for Claude Code sessions (local only)
-CLAUDE.local.md
+# The OSF cache bundle (built from cache/, uploaded separately)
+relational_coding_2026_cache.zip

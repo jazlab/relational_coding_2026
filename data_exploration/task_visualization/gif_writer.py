@@ -13,6 +13,12 @@ import sys
 import imageio
 
 
+def _shown(path):
+    """``path`` as printed: relative to the working directory, so no output names the machine's
+    own directories."""
+    return os.path.relpath(path)
+
+
 class GifWriter(object):
     """GifWriter class."""
 
@@ -29,12 +35,12 @@ class GifWriter(object):
         gif_file = os.path.expanduser(gif_file)
         gif_dir = os.path.dirname(gif_file)
         if not os.path.exists(gif_dir):
-            print("Directory {} does not exist".format(gif_dir))
+            print("Directory {} does not exist".format(_shown(gif_dir)))
             should_create = input(
                 "Would you like to create that directory?  (y/n)"
             )
             if should_create == "y":
-                print("Creating directory {}".format(gif_dir))
+                print("Creating directory {}".format(_shown(gif_dir)))
                 os.makedirs(gif_dir)
             else:
                 print("exiting")
@@ -43,12 +49,16 @@ class GifWriter(object):
         # If the gif directory already exists, ask the user if they want to
         # override it.
         if os.path.isfile(gif_file):
-            print("File {} to write gif to already exists.".format(gif_file))
+            print(
+                "File {} to write gif to already exists.".format(
+                    _shown(gif_file)
+                )
+            )
             should_override = input(
                 "Would you like to override the file there?  (y/n)"
             )
             if should_override == "y":
-                print("Removing {}".format(gif_file))
+                print("Removing {}".format(_shown(gif_file)))
                 os.remove(gif_file)
             else:
                 print("exiting")
@@ -65,7 +75,7 @@ class GifWriter(object):
         """Write the gif."""
         print(
             "Writing gif with {} images to file {}".format(
-                len(self._images), self._gif_file
+                len(self._images), _shown(self._gif_file)
             )
         )
         imageio.mimsave(self._gif_file, self._images, fps=self._fps, loop=0)
