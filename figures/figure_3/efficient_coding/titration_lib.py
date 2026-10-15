@@ -650,9 +650,10 @@ def compare_to_unbiased(df, subject):
 def unbiased_verdict(df):
     """One row per animal: how many points are worse, how many better, and the best challenger.
 
-    ``best_challenger_delta`` is the largest *improvement* any sweep point achieves over the
-    unbiased one, significant or not. A negative number that is nowhere near significance is the
-    useful summary: it bounds how much there was to gain.
+    ``best_challenger_delta`` is the error of the best sweep point minus the unbiased one's,
+    significant or not: negative when that point beats the unbiased one, positive when every
+    sweep point is worse. A negative number that is nowhere near significance is the useful
+    summary: it bounds how much there was to gain.
     """
     rows = []
     for s in sel.SUBJECTS:
