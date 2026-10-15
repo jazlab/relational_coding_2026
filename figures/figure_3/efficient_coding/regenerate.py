@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Regenerate `dataframes/results_k20_b100.csv`, the fit `titration.ipynb` reads.
+"""Regenerate `dataframes/results.csv`, the fit `titration.ipynb` reads.
 
     python regenerate.py                  # ~25 min on 10 cores
     python regenerate.py --jobs 8         # fewer workers
@@ -17,26 +17,35 @@ both animals and ``lambda(0.5) = 0`` exactly, which is what makes 0.5 the unbias
 
 Runtime is ~3.3 s per training: 9 points x 2 animals x 100 repeats = 1800 trainings. Response
 tables are cached under `cache/figures/figure_3/pool_tables/`, so only the first run pays the
-127 ms/unit to build them.
+127 ms/unit to build them. The workers' output goes to `regen_sweep.log` in the system's
+temporary directory (`tempfile.gettempdir()`).
 """
 import argparse
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-DF = HERE / "dataframes"
+_REPO = (
+    Path(__file__).resolve().parents[3]
+)  # repository root, where paths.py lives
+if str(_REPO) not in sys.path:
+    sys.path.insert(0, str(_REPO))
+import paths  # noqa: E402
+
+DF = paths.FIGURES_CACHE / "figure_3/efficient_coding/dataframes"
 PY = sys.executable
 SWEEP = HERE / "run_titration.py"
 
 #: The animals. K -- distinct units per sweep point -- is not set here and is not a knob: it is
-#: the smallest wedge over the whole sweep, which `run_titration.matched_k` derives as 160
-#: (Monkey P) / 51 (Monkey E). Every point on the curve is drawn at that size or skipped, so
+#: the smallest wedge over the whole sweep, which `run_titration.matched_k` derives as 186
+#: (Monkey P) / 62 (Monkey E). Every point on the curve is drawn at that size or skipped, so
 #: the curve cannot be confounded with neuron count.
 SUBJECTS = ("Perle", "Elgar")
 REPEATS = 100  # trainings per sweep point
-SWEEP_NAME = "results_k20_b100"
+SWEEP_NAME = "results"
 #: Sweep points per worker. Six groups x two animals = 12 workers, which is the intended shape.
 GROUPS = ["0.1,0.2", "0.3,0.4", "0.5,0.6", "0.7", "0.8", "0.9"]
 
@@ -73,7 +82,7 @@ def run_pool(jobs, cmds, label, dry):
         return
     t0 = time.time()
     running, queue, done = [], list(cmds), 0
-    log = open(f"/tmp/regen_{label}.log", "w")
+    log = open(Path(tempfile.gettempdir()) / f"regen_{label}.log", "w")
     while queue or running:
         while queue and len(running) < jobs:
             running.append(
@@ -101,11 +110,16 @@ def run_pool(jobs, cmds, label, dry):
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument(
-        "--jobs", type=int, default=10, help="parallel workers (default 10)"
+        "--jobs",
+        "--n-jobs",
+        dest="jobs",
+        type=int,
+        default=10,
+        help="parallel workers (default 10)",
     )
     ap.add_argument("--dry-run", action="store_true")
     a = ap.parse_args()
-    DF.mkdir(exist_ok=True)
+    DF.mkdir(parents=True, exist_ok=True)
 
     print(f"sweep: {SWEEP_NAME}  ({REPEATS} repeats)")
     run_pool(

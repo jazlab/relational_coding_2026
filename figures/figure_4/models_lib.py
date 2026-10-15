@@ -4,7 +4,7 @@ r"""The single-neuron firing-rate models, their parameters, and the Poisson like
 as an explicit additive function of the two object angles (an *identity* link with a
 non-negative baseline — not the log link of ``figure_3/model_comparison``), and is fit by
 maximising the Poisson log-likelihood of the observed spike counts on 2-object trials
-alone. See ``README.md`` for how this differs from ``../neuron_models``.
+alone.
 
 Shared structure
 ----------------
@@ -18,11 +18,9 @@ model                    2-object firing rate
 ======================= ============================================================
 Relational               ``b + a_ret·[f(φ_A)+f(φ_B)] + a_rem·[f(r_AB) + f(r_BA)]``
 Relational bias          ``b + a·[f(φ̃_A(bias)) + f(φ̃_B(bias))]``
-Softmax                  ``b + a·(f_A e^{β f_A} + f_B e^{β f_B})/(e^{β f_A}+e^{β f_B})``
 Normalization            ``b + a·(f_A + f_B)/(f_A + f_B + α)``
 Inhibition (tied)        ``b + a·[(f_{E,A}+f_{E,B}) − (f_{I,A}+f_{I,B})]``
 Basis function           ``b + a·(f_A + f_B)·(1 + β·cos 2(ψ − θ))``, β ≥ 0
-Priority map             ``b + a·[s·f_A + (1−s)·f_B]``, ``s = σ(λ·[cos(φ_A−θ_p) − cos(φ_B−θ_p)])``
 Weighted average         ``b + a·[(1+γ·d_A)·f(φ_A) + (1+γ·d_B)·f(φ_B)]``
 Constant                 ``b`` — the reference every likelihood is measured against
 ======================= ============================================================
@@ -46,11 +44,11 @@ peak-normalised form just makes ``amplitude`` readable as "Hz at the preferred d
 ``width`` is an angular scale in radians. For narrow bumps it is close to the standard
 deviation of a wrapped Gaussian (the two agree to 0.006 at ``width = 0.3``, diverging to 0.3
 by ``width = 1.5``). The half-width at half maximum is ``arccos(1 − width²·ln2)`` — about
-``1.177·width`` when narrow; use :func:`hwhm_deg` / :func:`width_from_hwhm` to convert.
+``1.177·width`` when narrow; :func:`width_from_hwhm` converts an HWHM to a ``width``.
 
 .. note::
-   A plain cosine ``f(φ) = cos(φ − θ)`` used to be available as a fixed-shape alternative and
-   has been removed. It **cannot test the relational hypothesis**: ``remap(A, B)`` and
+   A plain cosine ``f(φ) = cos(φ − θ)`` is deliberately not offered as a tuning function. It
+   **cannot test the relational hypothesis**: ``remap(A, B)`` and
    ``remap(B, A)`` differ by exactly π and ``cos(x) + cos(x + π) = 0``, so the remapped drive
    vanishes identically and the relational model, the relational-bias model at ``α = 1`` and
    the inhibition model all collapse to the retinotopic one. Expressing relational tuning
@@ -89,16 +87,16 @@ def rectify(rate):
     )
 
 
-def poisson_ll_per_trial(obs_fr, pred_rate, duration=None):
+def poisson_ll_per_trial(obs_fr, pred_rate):
     """Per-trial Poisson log-likelihood (nats) of the observed spike counts
     ``obs_fr · duration`` under the predicted mean count ``rectify(pred_rate) · duration``.
     The ``log Γ(y+1)`` term is **kept**, so the numbers are true log-likelihoods and are
     comparable across trials with different spike counts.
 
-    ``duration`` defaults to ``data_lib.DURATION_S`` read **at call time**, not at import, so
-    a caller that changes the analysis window (`supp_figure_2`) changes the likelihood too.
+    The duration is ``data_lib.DURATION_S`` read **at call time**, not at import, so a
+    caller that changes the analysis window (`supp_figure_2`) changes the likelihood too.
     """
-    duration = data_lib.DURATION_S if duration is None else duration
+    duration = data_lib.DURATION_S
     lam = rectify(pred_rate) * duration
     count = np.asarray(obs_fr, float) * duration
     return count * np.log(lam) - lam - gammaln(count + 1.0)
@@ -183,7 +181,6 @@ def remap_angle(phi_a, phi_b):
 
 
 # ── The relational-bias coordinate transform ──────────────────────────────────
-# ── The relational-bias coordinate transform ──────────────────────────────────
 
 
 def bias_angles(phi_a, phi_b, bias):
@@ -218,9 +215,9 @@ def bias_angles(phi_a, phi_b, bias):
 # ── Parameter bounds ──────────────────────────────────────────────────────────
 # Amplitudes, baselines and widths are non-negative, as specified. `theta` is periodic, so
 # its "bounds" are only there to keep L-BFGS-B in a finite box — multi-start over the
-# circle, not the box, is what handles its multimodality. Two parameter names mean
-# different things in different models (`alpha`, `beta`); those models override the entry
-# via their class-level `bounds` (see `Model.param_bounds`).
+# circle, not the box, is what handles its multimodality. A model can override an
+# entry, or bound a parameter only it has (`beta`), via its class-level `bounds` (see
+# `Model.param_bounds`).
 BOUNDS = {
     "bias": (0.0, 1.0),  # the relational-bias reference point
     "gamma": (-3.0, 3.0),  # contrast weighting; see the model
@@ -233,15 +230,9 @@ BOUNDS = {
     "amplitude_retinotopic": (0.0, 500.0),
     "amplitude_remapped": (0.0, 500.0),
     "alpha": (1e-6, 1e3),  # normalization's semi-saturation, > 0
-    "beta": (-50.0, 50.0),  # softmax; exp(beta·f) must not overflow
-    "theta_p": (
-        -4 * np.pi,
-        4 * np.pi,
-    ),  # the priority map's preferred direction
 }
 
-WIDTH_PARAMS = ("width",)
-ANGLE_PARAMS = ("theta", "theta_E", "theta_I", "theta_p")
+ANGLE_PARAMS = ("theta", "theta_E", "theta_I")
 
 # The upper bound on `bias`, and it is 1.0 for a reason that is not "because bias is a
 # weight". Allowing it past 1 does not extrapolate to a *new* hypothesis, it re-describes an
@@ -269,11 +260,11 @@ class Model:
     """Base class. Subclasses define ``name``, ``label``, ``params``, ``rate_2obj`` and
     ``init_params``; ``rate_1obj`` has a shared default (see below).
 
-    ``self.f`` is the shared tuning function; ``self.tuning`` its name.
+    ``self.f`` is the shared tuning function.
 
     **``rate_1obj`` is never fit and never scored** in this directory — nothing here reads
-    1-object trials. It is defined because the tuning-curve panels draw the 1-object row as
-    a *check*: the receptive field these models infer from 2-object trials alone either
+    1-object trials. It is defined because `ring_lib` draws the 1-object prediction as a
+    *check*: the receptive field these models infer from 2-object trials alone either
     does or does not match the neuron's measured single-object tuning, and that is worth
     seeing. Read those panels as a prediction, not as a fit.
     """
@@ -313,19 +304,13 @@ class Model:
     # -- shared ---------------------------------------------------------------
     def param_bounds(self, name):
         """Optimiser bounds for one parameter, with this model's overrides applied."""
-        return self.bounds.get(name, BOUNDS[name])
+        # Not `self.bounds.get(name, BOUNDS[name])`: the default is evaluated eagerly, and a
+        # parameter only one model has (`beta`) is in that model's `bounds` and not in BOUNDS.
+        return self.bounds[name] if name in self.bounds else BOUNDS[name]
 
-    def free_params(self, fixed_width=False):
-        """The parameters actually optimised — everything except a width that is pinned
-        by the configuration or absent from the tuning function."""
-        return tuple(
-            n for n in self.params if not self._frozen(n, fixed_width)
-        )
-
-    def _frozen(self, name, fixed_width):
-        if name in WIDTH_PARAMS:
-            return fixed_width
-        return False
+    def free_params(self):
+        """The parameters actually optimised: every one of them."""
+        return tuple(self.params)
 
     def __repr__(self):
         return f"{type(self).__name__}()"
@@ -341,7 +326,7 @@ class FutureFieldModel(Model):
     ``amplitude_remapped = 0`` recovers the retinotopic model exactly, so the relational
     model **nests** it and the fitted ``amplitude_remapped`` is a direct, continuous
     measure of how relational the neuron is. The two amplitudes are the natural read-out;
-    The two amplitudes are the natural read-out; their ratio is scale-free.
+    their ratio is scale-free.
     """
 
     name = "future_field"
@@ -444,42 +429,6 @@ class RelationalBiasModel(Model):
         )
 
 
-class SoftmaxModel(Model):
-    """A soft winner-take-all over the two single-object drives: the paired response is a
-    ``beta``-weighted softmax average of ``f(φ_A)`` and ``f(φ_B)``.
-
-        2 object : baseline + amplitude · (f_A·e_A + f_B·e_B) / (e_A + e_B),
-                   e_X = exp(beta · f_X)
-
-    ``beta = 0`` is the plain **average** of the two drives, ``beta → +∞`` the **max**
-    (winner-take-all), ``beta → −∞`` the **min**.
-    """
-
-    name = "softmax"
-    label = "Softmax"
-    params = ("baseline", "theta", "width", "amplitude", "beta")
-
-    def rate_2obj(self, p, phi_a, phi_b):
-        w = p.get("width")
-        fa = self.f(phi_a, p["theta"], w)
-        fb = self.f(phi_b, p["theta"], w)
-        beta = p["beta"]
-        # Softmax weights, computed in a max-subtracted form so exp() cannot overflow.
-        m = np.maximum(beta * fa, beta * fb)
-        ea = np.exp(beta * fa - m)
-        eb = np.exp(beta * fb - m)
-        return p["baseline"] + p["amplitude"] * (fa * ea + fb * eb) / (ea + eb)
-
-    def init_params(self, s):
-        return dict(
-            baseline=s["baseline"],
-            theta=s["theta"],
-            width=s["width"],
-            amplitude=s["amplitude"],
-            beta=0.0,
-        )
-
-
 class NormalizationModel(Model):
     """Divisive normalisation of the summed drive by itself plus a semi-saturation
     constant ``alpha``, written so that ``amplitude`` is the **low-drive gain**.
@@ -500,7 +449,7 @@ class NormalizationModel(Model):
     comes out *worse than the retinotopic one on its own training data* — which a strictly
     larger family cannot be. The two forms describe exactly the same curves (``a =
     amplitude·alpha``); this one puts the retinotopic limit inside the box, where the
-    optimiser can reach it. See the README §2.1.
+    optimiser can reach it.
 
     The model is written for a **non-negative** drive, which the von Mises ``f`` always
     is; the denominator is guarded numerically.
@@ -698,7 +647,7 @@ class BasisFunctionModel(Model):
     the pair's chord aligns with the cell's own preferred direction.
 
     ``beta = 0`` is the retinotopic model **exactly**, which is what makes this model's
-    held-out ΔLL readable. Note that zero is now a *corner* of the parameter box rather than
+    held-out ΔLL readable. Note that zero is a *corner* of the parameter box rather than
     an interior point, which is why the optimiser is started there as well as inside (see
     ``fit_lib._structural_variants``).
     """
@@ -728,83 +677,6 @@ class BasisFunctionModel(Model):
         )
 
 
-LAMBDA_PRIORITY = 100.0  # selection sharpness; see PriorityMapModel
-
-
-class PriorityMapModel(Model):
-    r"""**Selection by a retinotopic priority map that need not agree with the receptive
-    field.**
-
-        2 object : baseline + amplitude · [ s·f(φ_A) + (1 − s)·f(φ_B) ],
-                   s = σ(LAMBDA_PRIORITY · [cos(φ_A − theta_p) − cos(φ_B − theta_p)])
-
-    The neuron keeps an ordinary gaze-centred receptive field and responds to whichever
-    object is currently prioritised; ``theta_p`` is the direction the priority map favours.
-
-    Why it is here. Figure 4e's impossibility argument is stated for
-    ``R(θ, φ) = f(g(θ), g(φ))`` with ``f`` monotonically increasing in both arguments, and a
-    reviewer proposed winner-take-all as a violation of it. It is not: ``max`` is
-    monotonically non-decreasing in both arguments, so it *satisfies* the hypothesis, and a
-    scan over ``theta`` and ``width`` on figure 4e's own four-corner stimulus finds the
-    reversal at exactly zero parameter settings. What does violate it is a selector reading a
-    **second map**, misaligned with the receptive field: ``theta_p = theta`` is max-pooling
-    and ``theta_p = theta + π`` is min-pooling — neither can reverse — while the reversal
-    becomes reachable in between, at a fraction 0.056 of receptive-field orientations by 10°
-    of misalignment and 0.494 by 90°. The fitted ``theta_p - theta`` is therefore the whole
-    content of the selection account, and this model is the one the relational hypothesis has
-    to beat.
-
-    Five parameters — ``baseline``, ``theta``, ``width``, ``amplitude``, ``theta_p`` — the
-    same count as every model here but the retinotopic and constant ones.
-
-    .. note::
-       ``LAMBDA_PRIORITY`` is a **constant, not a fitted parameter**, and it is 100 for a
-       measured reason. A hard ``argmax`` is discontinuous at the tie boundary and leaves
-       L-BFGS-B no gradient in ``theta_p``. But a *soft* λ makes this a softmax-weighted
-       average whose weights depend on the same variable as the drives, which is
-       non-monotone — so a soft λ destroys the reading of ``theta_p = theta`` as max-pooling.
-       Measured on the four-corner stimulus, the residual reversal magnitude at that corner
-       is 22% of its maximum at λ = 4, 11% at λ = 8, 4.4% at λ = 20 and 0.6% at λ = 100. The
-       data are indifferent (a 2.6-nat spread in best achievable log-likelihood across those
-       four values, over 24 neurons), so λ is chosen for interpretability. Freeing it would
-       be a sixth parameter and a different model — the "soft priority selection" (M3) of
-       ``prompts/SELECTION_MODELS.pdf``.
-
-    .. note::
-       This model carries **24 structural multi-starts** rather than the three or four the
-       others need (:func:`fit_lib._structural_variants`), because at this ``LAMBDA_PRIORITY``
-       the gradient in ``theta_p`` is dead almost everywhere. See that function for the
-       measurements.
-    """
-
-    name = "priority_map"
-    label = "Priority map"
-    short_label = "Priority"
-    params = ("baseline", "theta", "width", "amplitude", "theta_p")
-
-    def rate_2obj(self, p, phi_a, phi_b):
-        w = p.get("width")
-        fa = self.f(phi_a, p["theta"], w)
-        fb = self.f(phi_b, p["theta"], w)
-        # Logistic of the priority difference, in the branch-split form so that the
-        # exponent is never positive and exp() cannot overflow at LAMBDA_PRIORITY = 100.
-        d = LAMBDA_PRIORITY * (
-            np.cos(phi_a - p["theta_p"]) - np.cos(phi_b - p["theta_p"])
-        )
-        e = np.exp(-np.abs(d))
-        s = np.where(d >= 0, 1.0 / (1.0 + e), e / (1.0 + e))
-        return p["baseline"] + p["amplitude"] * (s * fa + (1.0 - s) * fb)
-
-    def init_params(self, s):
-        return dict(
-            baseline=s["baseline"],
-            theta=s["theta"],
-            width=s["width"],
-            amplitude=s["amplitude"],
-            theta_p=s["theta"],
-        )
-
-
 def rate_2obj(model, params, phi_a, phi_b, dctr=None):
     """One code path for every model's 2-object rate.
 
@@ -820,11 +692,9 @@ def rate_2obj(model, params, phi_a, phi_b, dctr=None):
 
 MODEL_CLASSES = {
     "basis_function": BasisFunctionModel,
-    "priority_map": PriorityMapModel,
     "relational_bias": RelationalBiasModel,
     "weighted_average": WeightedAverageModel,
     "future_field": FutureFieldModel,
-    "softmax": SoftmaxModel,
     "normalization": NormalizationModel,
     "inhibition": InhibitionModel,
     "constant": ConstantModel,
@@ -834,11 +704,9 @@ MODEL_CLASSES = {
 #: interest first, then the combination-rule alternatives, then the reference every
 #: likelihood is scored against.
 #:
-#: This is also `FitConfig`'s default set, so it is what `run_cache.py` fits. Two models used
-#: to be held out of it on the grounds that adding them would refit every neuron — that is no
-#: longer true, and was never quite right: the model list is not part of `FitConfig.tag`, so
-#: `fit_session` tops up only the models a neuron is missing and leaves the rest untouched.
-#: Keeping the list partial meant every caller had to patch around it.
+#: This is also `FitConfig`'s default set, so it is what `run_cache.py` fits. The model list
+#: is not part of `FitConfig.tag`, so `fit_session` tops up only the models a neuron is
+#: missing and leaves the rest untouched.
 #:
 #: Note that `relational_bias` is in here because it has to be *fit*, not because it is one
 #: of the models under test: it is the relationality metric's measuring instrument
@@ -846,35 +714,17 @@ MODEL_CLASSES = {
 MODEL_ORDER = [
     "future_field",
     "relational_bias",
-    "softmax",
     "normalization",
     "inhibition",
     "basis_function",
-    "priority_map",
     "weighted_average",
     "constant",
 ]
-
-MODEL_LABELS = {k: MODEL_CLASSES[k].label for k in MODEL_ORDER}
 
 #: Figure labels: the short form where a model has one, the full label otherwise.
 MODEL_LABELS_SHORT = {
     k: (MODEL_CLASSES[k].short_label or MODEL_CLASSES[k].label)
     for k in MODEL_ORDER
-}
-
-# Colors shared by every figure in this directory. Retinotopic blue and relational orange
-# match figure_3/model_comparison and figure_4/relational_continuum.
-MODEL_COLORS = {
-    "future_field": "tab:orange",
-    "softmax": "tab:green",
-    "normalization": "tab:red",
-    "inhibition": "tab:brown",
-    "relational_bias": "tab:cyan",
-    "basis_function": "tab:olive",
-    "priority_map": "tab:purple",
-    "weighted_average": "tab:pink",
-    "constant": "tab:gray",
 }
 
 
@@ -885,17 +735,16 @@ def build_models(names=None):
 
 
 # ── Starting values ───────────────────────────────────────────────────────────
-def unit_init_stats(unit, default_width=0.8):
+def unit_init_stats(unit):
     """Cheap summary statistics of one neuron used to seed the optimiser — **computed from
     2-object trials only**.
 
-    ``../neuron_models`` derives these from the 1-object trials, where the preferred
-    direction is unambiguous. Here nothing may touch a 1-object trial, so ``theta`` is the
+    Nothing here may touch a 1-object trial, so ``theta`` is the
     firing-rate-weighted circular mean over *both* objects of every 2-object trial. On a
     retinotopic neuron the object in the receptive field is the one driving the rate and
     the other is roughly uniform, so the second averages out and the estimate leans towards
     the true preferred direction — diluted, but in the right place. It only has to be in
-    the right ballpark: the fit is multi-started at ``n_theta_starts`` directions around
+    the right ballpark: the fit is multi-started at ``fit_lib.N_THETA_STARTS`` directions around
     the whole circle regardless, so a bad ``theta`` here costs nothing.
     """
     t0 = np.asarray(unit["t0"], float)
@@ -918,6 +767,6 @@ def unit_init_stats(unit, default_width=0.8):
         theta=theta,
         baseline=baseline,
         amplitude=amplitude,
-        width=default_width,
+        width=0.8,
         mean_fr=mean_fr,
     )

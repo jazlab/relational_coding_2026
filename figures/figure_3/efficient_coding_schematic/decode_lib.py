@@ -1,31 +1,23 @@
 r"""Two strict sub-populations of real neurons, and whether a decoder can tell three stimuli apart.
 
 This module is the whole of `decoding.ipynb`: the selection rule that builds the two
-sub-populations, the stimuli they are shown, the decoder, and the figures. It was two files
-(`decode_lib.py` and `strict_lib.py`) until 2026-09-13; they were merged because the notebook is
-the only consumer and the split cut the pipeline in half at an arbitrary point.
+sub-populations, the stimuli they are shown, the decoder, and the figures.
 
 1. THE SELECTION
 ----------------
-Two sub-populations, **disjoint** and at **equal n**, drawn from **one ranking over both
-animals** (:func:`select_wedges`). Equal n is not cosmetic: any read-out improves with neuron
-count, so two samples of different size are not comparable at all. The larger side is subsampled
-*without* replacement, so no neuron is counted twice and the two samples share nothing.
+Two sub-populations, **disjoint** and at **equal n**, ranked **within each animal**
+(:func:`select_wedges`, called once per animal, the two animals pooled afterwards so they
+contribute evenly). Equal n is not cosmetic: any read-out improves with neuron count, so two
+samples of different size are not comparable at all.
 
-The animals were ranked separately and pooled afterwards until 2026-09-13, which forced an even
-split between them. Pooling first means the split is an **outcome**, and it is very uneven: held-
-out accuracy is systematically higher in Monkey P, so Monkey P supplies almost all of both sides.
-:func:`wedge_report` and the notebook print the composition; read any change in the result
-against it.
-
-The two samples are the N neurons each model fits **best**, not the extremes of rho: rho is an
-angle, and its ends collect FAILED fits — a neuron scoring 0.501 and 0.500 sits at rho = 0 and
-would be called purely retinotopic on no evidence.
+The two samples are the N neurons each model fits **best** (:func:`top_n_positions`), not the
+extremes of rho: rho is an angle, and its ends collect FAILED fits — a neuron scoring 0.501 and
+0.500 sits at rho = 0 and would be called purely retinotopic on no evidence. Each neuron is
+first assigned to whichever model fits it better, so the two samples share no neuron.
 
 **What is not fixed.** The two ends still differ in everything else that covaries with rho --
-firing rate, tuning depth, brain area. :func:`wedge_report` prints those so the confound is
-visible; it is not removed, and a difference in decoding accuracy should not be read as caused
-by relationality alone.
+firing rate, tuning depth, brain area. A difference in decoding accuracy should not be read as
+caused by relationality alone.
 
 2. THE STIMULI
 --------------
@@ -58,11 +50,9 @@ The classifier is linear on purpose: the claim is that the *population code* sep
 stimuli, and a non-linear decoder could separate clouds no downstream neuron could read with a
 weighted sum.
 
-Two things this replaced, both recoverable from git: a simulated observation model (Poisson
-counts drawn from the response tables, removed 2026-09-13 with the `USE_REAL_TRIALS` switch),
-and before that a Fisher-information reading, `d'^2 = Delta^T J Delta` (`schematic_lib.py`,
-`fisher_lib.py`). Fisher information is **local**, exact only for small `Delta`, and A vs C moves
-the objects far enough that the expansion was an assumption rather than a fact.
+A held-out accuracy needs no local approximation: a Fisher-information reading,
+`d'^2 = Delta^T J Delta`, is exact only for small `Delta`, and A vs C moves the objects far
+enough that the expansion would be an assumption rather than a fact.
 
 **What the number is not.** Accuracy depends on how many trials the decoder is given, so read it
 as a comparison *between populations at matched settings*: what the figure claims is the pattern
@@ -77,12 +67,12 @@ import numpy as np
 import pandas as pd
 
 _HERE = Path(__file__).resolve().parent
-_V2 = _HERE.parent  # figures/figure_3
+_FIGURE_3 = _HERE.parent  # figures/figure_3
 for _p in (
-    str(_V2),
-    str(_V2.parent),
-    str(_V2 / "model_comparison"),
-    str(_V2 / "efficient_coding"),
+    str(_FIGURE_3),
+    str(_FIGURE_3.parent),
+    str(_FIGURE_3 / "model_comparison"),
+    str(_FIGURE_3 / "efficient_coding"),
 ):
     if _p not in sys.path:
         sys.path.insert(0, _p)
@@ -94,51 +84,26 @@ import selection_lib as sel  # noqa: E402  the relationality coordinate
 # 1. Selecting the two sub-populations
 # ══════════════════════════════════════════════════════════════════════════════
 
-#: The animals, pooled into one ranking by :func:`select_wedges`.
+#: The animals. Each is ranked separately by :func:`select_wedges` and the two are pooled.
 SUBJECTS = ("Perle", "Elgar")
 
 
-def wedge_report(
-    units, positions, cols=("rho", "mean_rate", "n_2obj", "brain_area")
-):
-    """What differs between the two wedges *besides* relationality.
-
-    Printed rather than corrected. Equal n makes the comparison meaningful; it does not make
-    the two samples alike, and anything here that differs is a live alternative explanation for
-    a gap in decoding accuracy.
-    """
+def wedge_report(units, positions):
+    """``n`` and the median number of recorded 2-object trials (``n_2obj``) per side."""
     rows = []
     for side, pos in positions.items():
         sub = units.iloc[pos]
-        row = {"side": side, "n": len(sub)}
-        for c in cols:
-            if c not in sub.columns:
-                continue
-            v = sub[c]
-            row[c] = (
-                v.mode().iat[0]
-                if v.dtype == object
-                else float(np.nanmedian(v.to_numpy(float)))
+        rows.append(
+            dict(
+                side=side,
+                n=len(sub),
+                n_2obj=float(np.nanmedian(sub["n_2obj"].to_numpy(float))),
             )
-        rows.append(row)
-    import pandas as pd
-
+        )
     return pd.DataFrame(rows).set_index("side")
 
 
-# ── Selecting first, then building — and caching the result ───────────────────
-def select_wedges(
-    subject,
-    n_per_side,
-    sample_sigma_deg=10.0,
-    seed=0,
-    verbose=True,
-    min_trials=None,
-    stimuli=None,
-    pairs=None,
-    tol_deg=None,
-    exclusive=True,
-):
+def select_wedges(subject, n_per_side, min_trials, stimuli, pairs, tol_deg):
     """One subject's two sub-populations: the N best-fit neurons of each model.
 
     Returns ``dict(pop_df, rho, sides, positions)``, where ``positions`` maps each side to row
@@ -146,46 +111,24 @@ def select_wedges(
 
     The ranking is **within one animal**, so ``n_per_side`` is a number per animal and the
     notebook calls this once per subject: each animal contributes its own top N and the two
-    are pooled afterwards, which keeps the animals' contributions even by construction. A
-    single pooled ranking over both animals was tried on 2026-09-13 and reverted — held-out
-    accuracy is systematically higher in Monkey P, so one ranking on fit strength took almost
-    all of its neurons from that animal.
+    are pooled afterwards, which keeps the animals' contributions even by construction. (One
+    ranking over both animals would take almost all of its neurons from Monkey P, whose held-out
+    accuracy is systematically higher.)
 
-    ``sample_sigma_deg`` is still passed to ``pool.subject_pool``, which takes it as part of
-    its cache identity even with ``with_tables=False``; it no longer affects anything here.
+    A neuron must also have ``min_trials`` recorded trials within ``tol_deg`` of every stimulus
+    of every pair in ``pairs``, or it is skipped and the next one down the ranking takes its
+    place — see :func:`enough_trials_mask` for what that couples.
     """
     # The pool frame only — `with_tables=False` reads no per-trial data.
-    d = pool.subject_pool(
-        subject,
-        sample_sigma_deg=sample_sigma_deg,
-        with_tables=False,
-        verbose=False,
-    )
+    d = pool.subject_pool(subject, with_tables=False, verbose=False)
 
-    # The two samples are the N best-fit neurons of each model (:func:`top_n_positions`).
-    # Selecting on the EXTREMES OF RHO was the other option until 2026-09-13 and was removed
-    # with `strict_positions`: rho is an angle, so its ends collect failed fits and a sample
-    # can be pure in composition while barely driven at all.
-    #
-    # With `min_trials`, a neuron must also have that many recorded trials for every stimulus
-    # or it is skipped and the next one down the ranking takes its place — see
-    # `enough_trials_mask` for what that couples.
-    eligible = None
-    if min_trials:
-        if stimuli is None or pairs is None or tol_deg is None:
-            raise ValueError(
-                "min_trials needs stimuli, pairs and tol_deg to test against"
-            )
-        eligible = lambda cand: enough_trials_mask(  # noqa: E731
-            d["pop_df"].iloc[cand],
-            stimuli,
-            pairs,
-            tol_deg,
-            min_trials,
-            exclusive,
+    def eligible(cand):
+        return enough_trials_mask(
+            d["pop_df"].iloc[cand], stimuli, pairs, tol_deg, min_trials
         )
+
     pos = top_n_positions(
-        d["pop_df"], n_per_side=n_per_side, eligible=eligible, verbose=verbose
+        d["pop_df"], n_per_side=n_per_side, eligible=eligible
     )
 
     keep = np.concatenate([pos["retinotopic"], pos["relational"]])
@@ -205,9 +148,7 @@ def select_wedges(
     )
 
 
-def enough_trials_mask(
-    units_df, stimuli, pairs, tol_deg, min_trials, exclusive=True
-):
+def enough_trials_mask(units_df, stimuli, pairs, tol_deg, min_trials):
     """Which units have at least ``min_trials`` recorded trials for **every** stimulus used.
 
     A unit with fewer than ``n_splits`` eligible trials for one stimulus cannot be
@@ -223,13 +164,7 @@ def enough_trials_mask(
     trials = pool.load_pool_trials(units_df)
     ok = np.ones(len(units_df), bool)
     for a, b in pairs:
-        idx_a, idx_b = trial_pools(
-            trials,
-            stimuli[a],
-            stimuli[b],
-            tol_deg=tol_deg,
-            exclusive=exclusive,
-        )
+        idx_a, idx_b = trial_pools(trials, stimuli[a], stimuli[b], tol_deg)
         ok &= np.array(
             [
                 len(x) >= min_trials and len(y) >= min_trials
@@ -239,7 +174,7 @@ def enough_trials_mask(
     return ok
 
 
-def top_n_positions(units, n_per_side, eligible=None, verbose=True):
+def top_n_positions(units, n_per_side, eligible=None):
     """The ``n`` **most retinotopically** and ``n`` **most relationally** modulated neurons.
 
     ρ is an *angle* — a ratio of the two models' fits — so its extremes are a
@@ -266,7 +201,8 @@ def top_n_positions(units, n_per_side, eligible=None, verbose=True):
     test are **skipped**, so the result is the top ``n`` *eligible* neurons of each side rather
     than the top ``n`` outright. :func:`enough_trials_mask` is the test this exists for.
 
-    Returns ``{'retinotopic': positions, 'relational': positions}``, equal length.
+    Prints, per side, how many neurons were taken and their fit strengths. Returns
+    ``{'retinotopic': positions, 'relational': positions}``, equal length.
     """
     ret = sel.fit_strength(units, "retinotopic")
     rel = sel.fit_strength(units, "relational")
@@ -314,19 +250,18 @@ def top_n_positions(units, n_per_side, eligible=None, verbose=True):
                 f"n_splits."
             )
         out[side], skipped[side] = np.sort(np.array(chosen)), n_skip
-    if verbose:
-        for side in out:
-            v = strength[side][out[side]]
-            extra = (
-                f", {skipped[side]} skipped for too few trials"
-                if eligible is not None and skipped[side]
-                else ""
-            )
-            print(
-                f"  {side:12s}: {len(out[side])} of {len(groups[side])} "
-                f"(fit strength {np.min(v):.3f}–{np.max(v):.3f}, median {np.median(v):.3f}"
-                f"{extra})"
-            )
+    for side in out:
+        v = strength[side][out[side]]
+        extra = (
+            f", {skipped[side]} skipped for too few trials"
+            if eligible is not None and skipped[side]
+            else ""
+        )
+        print(
+            f"  {side:12s}: {len(out[side])} of {len(groups[side])} "
+            f"(fit strength {np.min(v):.3f}–{np.max(v):.3f}, median {np.median(v):.3f}"
+            f"{extra})"
+        )
     return out
 
 
@@ -395,33 +330,14 @@ def describe_pair(stim_a, stim_b, labels=("A", "B")):
 
 def plot_stimuli(
     stimuli,
-    titles=None,
-    figsize=(6.0, 2.2),
-    dpi=300,
-    radius=1.0,
-    disc_radius=0.13,
-    disc_color="0.6",
-    disc_edge="k",
-    disc_edge_lw=0.8,
-    reference=True,
-    ref_index=0,
-    ref_color="0.45",
-    ref_lw=1.2,
-    ref_ls=(0, (3, 2)),
-    arrows=True,
-    arrow_color="tab:green",
-    arrow_radius=0.78,
-    arrow_lw=1.6,
-    arrow_head=11,
-    arrow_min_deg=0.5,
-    ring_color="0.75",
-    ring_lw=1.0,
-    ring_ls="--",
-    cross_size=8,
-    view=1.35,
-    wspace=None,
-    title_fontsize=None,
-    title_y=None,
+    titles,
+    figsize,
+    disc_radius,
+    disc_color,
+    wspace,
+    view,
+    title_fontsize,
+    title_y,
 ):
     """The stimuli, one ring each: two gray discs on the ring, one per object.
 
@@ -430,49 +346,39 @@ def plot_stimuli(
     asserting the pair's relative vector, which is one code's read of the stimulus and not a
     property of it.
 
-    Every panel after `ref_index` also carries **dashed open circles at the reference
+    Every panel after the first also carries **dashed open circles at the first (reference)
     stimulus's object positions**. That is what makes the comparison legible: the
     displacement between two stimuli is a few degrees, invisible when the panels are read
     side by side, but obvious as the offset between each filled disc and the dashed circle
     it moved out of.
 
-    Each moved object also gets an **arrow** showing the perturbation that carries it there
-    from the reference stimulus. The arrows are drawn as arcs at `arrow_radius`, *inside* the
-    ring rather than on it, so they do not run underneath the discs they connect — at these
-    displacements an arrow drawn on the ring itself would be almost entirely hidden by the
-    two circles at its ends. An object that does not move (below `arrow_min_deg`) gets no
-    arrow, since a zero-length arrow would draw a meaningless head.
-
-    `disc_radius`, `arrow_radius` and the reference circles are in **data units**, where the
-    ring has radius `radius` — so everything is drawn at a true size relative to the ring and
-    stays that way at any figure size or dpi.
+    `disc_radius` and the reference circles are in **data units**, where the ring has radius
+    1 — so everything is drawn at a true size relative to the ring and stays that way at any
+    figure size or dpi.
 
     `wspace` sets the horizontal gap between panels, as a fraction of the average panel width
-    (matplotlib's convention; `None` leaves it to `tight_layout`). Note that each panel holds
-    a *square* ring inside an axes box that `figsize` may make wider, and that extra width
-    shows up as empty margin within the panel rather than between panels — so if the rings
-    still look far apart at `wspace=0`, narrow the figure or lower `view` (the axis limit, in
-    ring radii) instead of pushing `wspace` negative.
+    (matplotlib's convention). Note that each panel holds a *square* ring inside an axes box
+    that `figsize` may make wider, and that extra width shows up as empty margin within the
+    panel rather than between panels — so if the rings still look far apart at `wspace=0`,
+    narrow the figure or lower `view` (the axis limit, in ring radii) instead of pushing
+    `wspace` negative. `title_y` is each title's baseline in AXES FRACTIONS: 1.0 is the top of
+    the axes box, and lower values move it down toward the ring. The box is `view` ring radii
+    tall, so the ring's top sits at roughly `(1 + 1/view) / 2` -- about 0.87 at view 1.35 --
+    and that is how far the title can drop before it touches.
     """
     stimuli = np.asarray(stimuli, float)
     fig, axes = plt.subplots(
-        1, len(stimuli), figsize=figsize, dpi=dpi, squeeze=False
+        1, len(stimuli), figsize=figsize, dpi=300, squeeze=False
     )
     circ = np.linspace(0, 2 * np.pi, 256)
-    ref_xy = np.stack(
-        [
-            radius * np.cos(stimuli[ref_index]),
-            radius * np.sin(stimuli[ref_index]),
-        ],
-        axis=1,
-    )
+    ref_xy = np.stack([np.cos(stimuli[0]), np.sin(stimuli[0])], axis=1)
     for i, (ax, stim) in enumerate(zip(axes[0], stimuli)):
         ax.plot(
-            radius * np.cos(circ),
-            radius * np.sin(circ),
-            color=ring_color,
-            lw=ring_lw,
-            ls=ring_ls,
+            np.cos(circ),
+            np.sin(circ),
+            color="0.75",
+            lw=1.0,
+            ls="--",
             zorder=1,
         )
         ax.plot(
@@ -480,90 +386,43 @@ def plot_stimuli(
             0,
             marker="+",
             color="k",
-            markersize=cross_size,
+            markersize=8,
             markeredgewidth=1.3,
             zorder=2,
         )
-        if reference and i != ref_index:
+        if i != 0:
             for x, y in ref_xy:
                 ax.add_patch(
                     plt.Circle(
                         (x, y),
                         disc_radius,
                         facecolor="none",
-                        edgecolor=ref_color,
-                        lw=ref_lw,
-                        ls=ref_ls,
+                        edgecolor="0.45",
+                        lw=1.2,
+                        ls=(0, (3, 2)),
                         zorder=3,
                     )
                 )
-        if arrows and i != ref_index:
-            for a, b in zip(stimuli[ref_index], stim):
-                d = float(
-                    (b - a + np.pi) % (2 * np.pi) - np.pi
-                )  # signed shortest move
-                if abs(np.degrees(d)) < arrow_min_deg:
-                    continue
-                arc = a + np.linspace(0.0, d, 32)
-                ax.plot(
-                    arrow_radius * np.cos(arc),
-                    arrow_radius * np.sin(arc),
-                    color=arrow_color,
-                    lw=arrow_lw,
-                    solid_capstyle="round",
-                    zorder=5,
-                )
-                ax.annotate(
-                    "",
-                    xy=(
-                        arrow_radius * np.cos(arc[-1]),
-                        arrow_radius * np.sin(arc[-1]),
-                    ),
-                    xytext=(
-                        arrow_radius * np.cos(arc[-2]),
-                        arrow_radius * np.sin(arc[-2]),
-                    ),
-                    arrowprops=dict(
-                        arrowstyle="-|>",
-                        color=arrow_color,
-                        lw=arrow_lw,
-                        mutation_scale=arrow_head,
-                        shrinkA=0,
-                        shrinkB=0,
-                    ),
-                    zorder=5,
-                )
-        for x, y in zip(radius * np.cos(stim), radius * np.sin(stim)):
+        for x, y in zip(np.cos(stim), np.sin(stim)):
             ax.add_patch(
                 plt.Circle(
                     (x, y),
                     disc_radius,
                     facecolor=disc_color,
-                    edgecolor=disc_edge,
-                    lw=disc_edge_lw,
+                    edgecolor="k",
+                    lw=0.8,
                     zorder=4,
                 )
             )
-        if titles is not None:
-            # `title_y` is the title's baseline in AXES FRACTIONS: 1.0 is the top of the axes
-            # box, and lower values move it down toward the ring. The box is `view` ring radii
-            # tall, so the ring's top sits at roughly `(1 + 1/view) / 2` -- about 0.87 at the
-            # default view -- and that is how far the title can drop before it touches.
-            # None leaves matplotlib's default placement (the top of the box plus `titlepad`).
-            ax.set_title(
-                titles[i],
-                fontsize=(title_fontsize or plt.rcParams["axes.titlesize"]),
-                y=title_y,
-            )
+        ax.set_title(titles[i], fontsize=title_fontsize, y=title_y)
         ax.set_xlim(-view, view)
         ax.set_ylim(-view, view)
         ax.set_aspect("equal")
         ax.axis("off")
     fig.tight_layout()
-    if wspace is not None:
-        fig.subplots_adjust(
-            wspace=wspace
-        )  # after tight_layout, which would override it
+    fig.subplots_adjust(
+        wspace=wspace
+    )  # after tight_layout, which would override it
     return fig, axes[0]
 
 
@@ -586,7 +445,7 @@ def trial_distance_deg(t0, t1, stim):
     return np.degrees(np.minimum(np.maximum(d0, d1), np.maximum(s0, s1)))
 
 
-def trial_pools(unit_trials, stim_a, stim_b, tol_deg=30.0, exclusive=True):
+def trial_pools(unit_trials, stim_a, stim_b, tol_deg):
     """Which recorded trials count as stimulus a and which as stimulus b, per unit.
 
     ``unit_trials`` is ``[(t0, t1, fr), ...]``, one entry per unit, as
@@ -595,12 +454,11 @@ def trial_pools(unit_trials, stim_a, stim_b, tol_deg=30.0, exclusive=True):
     A trial is eligible for a stimulus when **both** objects are within ``tol_deg`` of the
     stimulus objects they match (:func:`trial_distance_deg`).
 
-    ``exclusive=True`` assigns a trial to whichever of the two stimuli is **nearer**, so the two
-    classes are disjoint. That matters more than it sounds: A and B are ~21° apart and a useful
-    tolerance is a good fraction of that, so overlapping pools would put the same trial in both
-    classes and drive the decoder to chance for a reason that has nothing to do with the code.
-    With ``False`` a trial eligible for both enters both, which is only meaningful when the two
-    stimuli are far apart relative to the tolerance.
+    A trial eligible for both is assigned to whichever of the two stimuli is **nearer**, so the
+    two classes are disjoint. That matters more than it sounds: A and B are ~21° apart and a
+    useful tolerance is a good fraction of that, so overlapping pools would put the same trial in
+    both classes and drive the decoder to chance for a reason that has nothing to do with the
+    code.
 
     Returns ``(idx_a, idx_b)``, lists of index arrays in unit order.
     """
@@ -609,8 +467,7 @@ def trial_pools(unit_trials, stim_a, stim_b, tol_deg=30.0, exclusive=True):
         da = trial_distance_deg(t0, t1, stim_a)
         db = trial_distance_deg(t0, t1, stim_b)
         ka, kb = da <= float(tol_deg), db <= float(tol_deg)
-        if exclusive:
-            ka, kb = ka & (da <= db), kb & (db < da)
+        ka, kb = ka & (da <= db), kb & (db < da)
         idx_a.append(np.flatnonzero(ka))
         idx_b.append(np.flatnonzero(kb))
     return idx_a, idx_b
@@ -621,10 +478,9 @@ def _pseudo_population(unit_trials, idx, n_trials, rng):
 
     The units were recorded in different sessions, so there is no such thing as a simultaneous
     population response here and the rows are **pseudo-trials** — each unit contributes a real
-    trial of its own, drawn with replacement from its matching pool. That is the same
-    independence assumption the simulated path makes by drawing each unit's Poisson count
-    separately; what it buys is the real trial-to-trial variability and the real stimulus
-    scatter in place of a model of them.
+    trial of its own, drawn with replacement from its matching pool. That assumes the units
+    independent given the stimulus; what it buys is the real trial-to-trial variability and the
+    real stimulus scatter in place of a model of them.
     """
     X = np.empty((int(n_trials), len(unit_trials)), float)
     for j, ((_t0, _t1, fr), take) in enumerate(zip(unit_trials, idx)):
@@ -653,23 +509,16 @@ def _trial_folds(idx, n_splits, rng):
 
 
 def decode_pair_real(
-    unit_trials,
-    stim_a,
-    stim_b,
-    n_trials=200,
-    n_test=100,
-    tol_deg=30.0,
-    exclusive=True,
-    n_splits=5,
-    seed=0,
-    C=1.0,
+    unit_trials, stim_a, stim_b, n_trials, n_test, tol_deg, n_splits, seed, C
 ):
-    """:func:`decode_pair` on **recorded** trials: no Poisson model, no counting window.
+    """Held-out accuracy of a linear classifier telling ``stim_a`` from ``stim_b`` on
+    **recorded** trials: no Poisson model, no counting window.
 
     Every trial the animal actually saw within ``tol_deg`` of a stimulus is eligible for that
-    stimulus's class, and a pseudo-trial takes one real trial per unit
-    (:func:`_pseudo_population`). The classifier is :func:`decode_pair`'s, so the two paths
-    differ in where the numbers come from and in nothing else.
+    stimulus's class (:func:`trial_pools`), and a pseudo-trial takes one real trial per unit
+    (:func:`_pseudo_population`): ``n_trials`` training and ``n_test`` held-out pseudo-trials
+    per class per fold. The classifier is a standardised, L2-regularised (``C``) logistic
+    regression.
 
     **The cross-validation is over recorded trials, not over pseudo-trials.** Each unit's
     eligible trials are split into ``n_splits`` groups; a fold builds its training pseudo-trials
@@ -678,11 +527,8 @@ def decode_pair_real(
     eligible trials and hundreds of pseudo-trials are drawn from them, so a pseudo-trial split
     would score the decoder largely on rows it had already seen.
 
-    The knobs of the simulated path — ``duration_s``, ``firing_rate_scale``, ``min_rate``,
-    ``noise_scale`` — have no meaning here and are deliberately absent rather than ignored: the
-    variability is whatever the animal's neurons did.
-
-    Returns :func:`decode_pair`'s keys plus, per class, the median and minimum eligible trials
+    Returns ``accuracy`` (mean over folds), ``accuracy_sem``, ``auc``, ``n_features``,
+    ``folds`` (per-fold accuracies) and, per class, the median and minimum eligible trials
     per unit (``n_pool_a``/``n_pool_b``, ``n_pool_min``) and how far the eligible trials sat
     from the nominal stimulus (``dist_a_deg``, ``dist_b_deg``) — the numbers that say whether
     the classes are the stimuli you asked for.
@@ -693,9 +539,7 @@ def decode_pair_real(
     from sklearn.preprocessing import StandardScaler
 
     rng = np.random.default_rng(seed)
-    idx_a, idx_b = trial_pools(
-        unit_trials, stim_a, stim_b, tol_deg=tol_deg, exclusive=exclusive
-    )
+    idx_a, idx_b = trial_pools(unit_trials, stim_a, stim_b, tol_deg)
     pools = [len(i) for i in idx_a] + [len(i) for i in idx_b]
     folds_a = [_trial_folds(i, n_splits, rng) for i in idx_a]
     folds_b = [_trial_folds(i, n_splits, rng) for i in idx_b]
@@ -778,11 +622,8 @@ def decoding_table(stimuli, pairs, labels, trials, **kw):
     """One decoder per population x stimulus pair, as a tidy frame.
 
     ``trials`` is a dict of population name -> ``[(t0, t1, fr), ...]``, one entry per unit, and
-    the decoding is done on the animal's **recorded** trials (:func:`decode_pair_real`).
-
-    A simulated path existed here until 2026-09-13 — Poisson counts drawn from per-neuron
-    response tables under a written-down observation model — and was removed once the recorded
-    trials became the only thing reported. Recover it from git if the simulation is wanted.
+    the decoding is done on the animal's **recorded** trials (:func:`decode_pair_real`, which
+    ``kw`` is passed to).
     """
     rows = []
     for name, unit_trials in trials.items():
@@ -800,11 +641,11 @@ def decoding_table(stimuli, pairs, labels, trials, **kw):
 
 
 #: Legend styling for :func:`plot_decoding`, overridable key by key via `legend_kw`.
-#: Everything except `rounded`/`rounding_size`/`x` is passed straight to `ax.legend`. The
-#: first two are applied to the frame afterwards (`legend` has no box-style argument); `x`
-#: slides the legend horizontally, replacing the x of `bbox_to_anchor` in axes coordinates —
-#: 0.5 centres it, 0.0 puts its `loc` corner at the left edge, negative values move it
-#: further left still. `None` leaves `bbox_to_anchor` alone.
+#: Everything except `rounding_size`/`x` is passed straight to `ax.legend`. `rounding_size` is
+#: applied to the frame afterwards (`legend` has no box-style argument); `x` slides the legend
+#: horizontally, replacing the x of `bbox_to_anchor` in axes coordinates — 0.5 centres it, 0.0
+#: puts its `loc` corner at the left edge, negative values move it further left still. `None`
+#: leaves `bbox_to_anchor` alone.
 LEGEND_DEFAULTS = dict(
     ncol=2,  # side by side, so the legend is one shallow strip
     loc="lower center",  # anchored ABOVE the axes ...
@@ -819,7 +660,6 @@ LEGEND_DEFAULTS = dict(
     edgecolor="0.6",
     facecolor="white",
     framealpha=1.0,
-    rounded=True,
     rounding_size=0.25,
     x=None,  # horizontal position; see above
 )
@@ -827,116 +667,75 @@ LEGEND_DEFAULTS = dict(
 
 def plot_decoding(
     table,
-    pair_order=None,
-    labels=None,
-    colors=("tab:blue", "tab:orange"),
-    figsize=(6.4, 3.0),
-    dpi=300,
-    ylabel=None,
-    bar_width=0.36,
-    bar_lw=0.6,
-    error="sem",
-    error_lw=1.4,
-    error_capsize=3.0,
-    error_color="k",
-    chance=0.5,
-    chance_color="k",
-    chance_lw=1.0,
-    chance_ls=(0, (4, 3)),
-    ylim=(0.4, 1.02),
-    legend_kw=None,
+    labels,
+    colors,
+    figsize,
+    ylim,
+    legend_kw,
+    bar_width,
+    error_lw,
+    error_capsize,
 ):
     """Grouped bars of held-out accuracy: one group per stimulus pair, one bar per population.
 
-    The styling is the bar figure this directory used for `d'^2` — black-edged bars, the
-    legend in a rounded box above the axes — so the two are readable as the same panel with
-    the measure swapped.
+    Black-edged bars, the legend in a rounded box above the axes. ``labels`` maps each
+    population to its legend text.
 
-    `error` chooses what the whiskers mean: `'sem'` (default) is the standard error of the
-    plotted mean **over cross-validation folds**, which is a statement about how stable the
-    fit is and *not* about how uncertain the accuracy is over neurons or trials; `'sd'` is the
-    spread across folds; `'none'` draws none. The honest check on a close pair of bars is to
-    re-run at another `seed`, since both bars are read off one draw of simulated trials.
+    The whiskers are the standard error of the plotted mean **over cross-validation folds**,
+    which is a statement about how stable the fit is and *not* about how uncertain the accuracy
+    is over neurons or trials. The honest check on a close pair of bars is to re-run at another
+    `seed`, since both bars are read off one draw of pseudo-trials.
 
-    The chance line is at `chance` (0.5) and is not a fitted reference — the classes are
-    balanced by construction, so it is where a decoder that has learnt nothing lands. It is
-    drawn dashed and **in front of** the bars, so a bar that reaches it can be read against it
-    rather than hiding it. `ylim` sets the y limits (`None` lets matplotlib choose), and
-    `legend_kw` overrides :data:`LEGEND_DEFAULTS` key by key.
+    The chance line is at 0.5 and is not a fitted reference — the classes are balanced by
+    construction, so it is where a decoder that has learnt nothing lands. It is drawn dashed
+    and **in front of** the bars, so a bar that reaches it can be read against it rather than
+    hiding it. `ylim` sets the y limits, and `legend_kw` overrides :data:`LEGEND_DEFAULTS` key
+    by key.
     """
     pops = list(dict.fromkeys(table["population"]))
-    pairs = pair_order or list(dict.fromkeys(table["pair"]))
-    if labels is None:
-        legend = list(pops)
-    elif isinstance(labels, dict):
-        legend = [labels.get(n, n) for n in pops]
-    else:
-        legend = list(labels)
+    pairs = list(dict.fromkeys(table["pair"]))
+    legend = [labels.get(n, n) for n in pops]
     x = np.arange(len(pairs), dtype=float)
-    fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
+    fig, ax = plt.subplots(figsize=figsize, dpi=300)
 
     for i, (pop, color, text) in enumerate(zip(pops, colors, legend)):
         sub = table[table["population"] == pop].set_index("pair")
         off = (i - (len(pops) - 1) / 2) * bar_width
         heights = [float(sub.loc[p, "accuracy"]) for p in pairs]
-        if error == "sem":
-            errs = [float(sub.loc[p, "accuracy_sem"]) for p in pairs]
-        elif error == "sd":
-            errs = [float(np.std(sub.loc[p, "folds"], ddof=1)) for p in pairs]
-        elif error in (None, "none"):
-            errs = None
-        else:
-            raise ValueError(
-                f"error must be 'sem', 'sd' or 'none' (got {error!r})"
-            )
-        bar_kw = (
-            {}
-            if errs is None
-            else dict(
-                yerr=errs,
-                capsize=error_capsize,
-                error_kw=dict(
-                    elinewidth=error_lw,
-                    capthick=error_lw,
-                    ecolor=error_color,
-                    zorder=5,
-                ),
-            )
-        )
+        errs = [float(sub.loc[p, "accuracy_sem"]) for p in pairs]
         ax.bar(
             x + off,
             heights,
             width=bar_width,
             color=color,
             edgecolor="k",
-            linewidth=bar_lw,
+            linewidth=0.6,
             label=text,
             zorder=3,
-            **bar_kw,
+            yerr=errs,
+            capsize=error_capsize,
+            error_kw=dict(
+                elinewidth=error_lw,
+                capthick=error_lw,
+                ecolor="k",
+                zorder=5,
+            ),
         )
 
-    if chance is not None:
-        ax.axhline(
-            chance, color=chance_color, lw=chance_lw, ls=chance_ls, zorder=7
-        )
+    ax.axhline(0.5, color="k", lw=1.0, ls=(0, (4, 3)), zorder=7)
     ax.set_xticks(x)
     ax.set_xticklabels(pairs)
-    ax.set_ylabel(ylabel or "Decoding accuracy")
-    if ylim is not None:
-        ax.set_ylim(*ylim)
-    kw = {**LEGEND_DEFAULTS, **(legend_kw or {})}
-    rounded, rounding_size = kw.pop("rounded"), kw.pop("rounding_size")
+    ax.set_ylabel("Decoding accuracy")
+    ax.set_ylim(*ylim)
+    kw = {**LEGEND_DEFAULTS, **legend_kw}
+    rounding_size = kw.pop("rounding_size")
     legend_x = kw.pop("x")
     if legend_x is not None:
-        anchor = kw.get("bbox_to_anchor") or (0.5, 1.0)
-        kw["bbox_to_anchor"] = (legend_x, anchor[1])
+        kw["bbox_to_anchor"] = (legend_x, kw["bbox_to_anchor"][1])
     leg = ax.legend(**kw)
-    if rounded and leg.get_frame_on():
-        # pad=0 and let `borderpad` do the spacing: a box-style pad grows the frame OUTSIDE
-        # the extent the legend reports, which a tight bounding box then clips off.
-        leg.get_frame().set_boxstyle(
-            "round", pad=0.0, rounding_size=rounding_size
-        )
+    # pad=0 and let `borderpad` do the spacing: a box-style pad grows the frame OUTSIDE
+    # the extent the legend reports, which a tight bounding box then clips off.
+    leg.get_frame().set_boxstyle("round", pad=0.0, rounding_size=rounding_size)
     despine(ax)
     fig.tight_layout()
     return fig, ax

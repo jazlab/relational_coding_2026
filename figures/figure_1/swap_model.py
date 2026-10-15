@@ -27,12 +27,12 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from scipy.special import i0e, i1e
 
 _FIGURES = Path(__file__).resolve().parent.parent
 if str(_FIGURES) not in sys.path:
     sys.path.insert(0, str(_FIGURES))
 import config  # noqa: E402  the one place selection criteria are set
-from scipy.special import i0e, i1e
 
 
 def _vm_pdf(error, kappa):
@@ -55,12 +55,13 @@ def _inv_mean_resultant(r):
     return 1.0 / (r**3 - 4 * r**2 + 3 * r)
 
 
-def fit_session(target, nontarget, response, n_iter=1000, tol=1e-9):
+def fit_session(target, nontarget, response):
     """Fit the mixture to one session by EM. Returns `(spatial_error_deg, p_swap)`.
 
     E-step: each trial's responsibility for {correct, swap, lapse}. M-step: the weights are
     the mean responsibilities, and kappa is refit from the responsibility-weighted mean
-    resultant length, each trial measured to the component's own mean.
+    resultant length, each trial measured to the component's own mean. Runs until the
+    log-likelihood changes by less than 1e-9, for at most 1000 iterations.
     """
     from_target = (
         np.asarray(response, float) - np.asarray(target, float) + np.pi
@@ -73,7 +74,7 @@ def fit_session(target, nontarget, response, n_iter=1000, tol=1e-9):
     r0 = np.clip(np.abs(np.mean(np.exp(1j * from_target))), 0.05, 0.95)
     kappa = float(np.clip(_inv_mean_resultant(r0), 1e-3, 1e4))
     previous = -np.inf
-    for _ in range(n_iter):
+    for _ in range(1000):
         a = p_correct * _vm_pdf(from_target, kappa)
         b = p_swap * _vm_pdf(from_other, kappa)
         c = p_lapse / (2.0 * np.pi)
@@ -100,7 +101,7 @@ def fit_session(target, nontarget, response, n_iter=1000, tol=1e-9):
                 1e4,
             )
         )
-        if abs(loglik - previous) < tol:
+        if abs(loglik - previous) < 1e-9:
             break
         previous = loglik
 
@@ -108,17 +109,14 @@ def fit_session(target, nontarget, response, n_iter=1000, tol=1e-9):
     return float(np.degrees(np.sqrt(-2.0 * np.log(r)))), p_swap
 
 
-def fit_sessions(df_2obj, min_trials=None):
-    """Fit every `(subject, session)` with at least `min_trials` trials.
+def fit_sessions(df_2obj):
+    """Fit every `(subject, session)` with at least `config.MIN_TRIALS_PER_SESSION` trials.
 
     One row per session: `subject`, `session`, `n_trials`, `spatial_error_deg`,
     `swap_error` — the x and y of the figure.
     """
-    # Resolved at call time, never as a default: a default argument freezes the value at
-    # import and `config.reload()` would not reach it. See config.reload.
-    min_trials = (
-        config.MIN_TRIALS_PER_SESSION if min_trials is None else min_trials
-    )
+    # Read at call time, so `config.reload()` reaches it.
+    min_trials = config.MIN_TRIALS_PER_SESSION
     rows = []
     for (subject, session), g in df_2obj.groupby(
         ["subject", "session"], sort=True

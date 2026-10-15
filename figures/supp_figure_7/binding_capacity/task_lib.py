@@ -1,5 +1,5 @@
-"""Cued-response task on synthetic **or real-neural** retinotopic/relational
-populations — the ``binding_capacity`` model.
+"""Cued-response task on a synthetic retinotopic/relational population — the
+``binding_capacity`` model.
 
 On each trial two objects are on screen (at least ``MIN_SEP_DEG`` apart) and the
 model must report the location of the **first** object as a bump of activity over
@@ -8,25 +8,9 @@ it says *where* the objects are but not *which one is first* — so the ordering
 to arrive through a separate, deliberately low-capacity **cue** channel, and the
 readout must fuse the two. That is the binding problem this directory measures.
 
-The model used here is :class:`CueMatrixModel` (``synthetic_v3`` in the original
-``paper_draft_0/binding_capacity/``): the cue is a genuine Poisson spike channel
+The model is :class:`CueMatrixModel`: the cue is a genuine Poisson spike channel
 whose spikes are projected into the population through a non-negative weight
-matrix with a fixed synaptic budget. See its docstring for the full pipeline.
-
-This is a trimmed, self-contained copy of
-``paper_draft_0/binding_capacity/task_lib.py``:
-
-- only the ``CueMatrixModel`` path is kept (the ``CueResponseModel`` /
-  ``CueAdditiveModel`` / ``CueRecurrentModel`` variants of the other ``v*``
-  notebooks, and ``train_recurrent_model``, are dropped);
-- ``binding_metrics`` is folded in from ``titration_lib``; and
-- the three circular helpers it used to import from
-  ``receptive_fields/neural_1_and_2_obj/`` (``circ_dist``, ``pair_vector_angle``,
-  ``stimulus_grid``) are defined below, so this file has no dependencies outside
-  itself.
-
-Real-neural populations enter through the same ``pop`` dict, carrying a
-``rate_fn`` instead of per-neuron tuning parameters — see ``neural_lib.py``.
+matrix with a fixed mean weight. See its docstring for the full pipeline.
 """
 
 import numpy as np
@@ -40,7 +24,7 @@ N_THREADS = 6
 torch.set_num_threads(min(N_THREADS, torch.get_num_threads()))
 
 
-# ── Circular helpers (self-contained) ─────────────────────────────────────────
+# ── Circular helpers ──────────────────────────────────────────────────────────
 def circ_dist(a, b):
     """Circular arc distance in [0, pi]; broadcasts. Wraps around the circle."""
     d = np.abs(np.asarray(a, float) - np.asarray(b, float)) % (2 * np.pi)
@@ -70,8 +54,7 @@ def make_population(n_retinotopic, n_relational, baseline, amplitude):
     kinds tile the circle independently). Retinotopic and relational neurons
     share identical 1-object cosine tuning ``(baseline, amplitude, mean)`` and
     differ only in how they combine two objects — see
-    :func:`expected_rates_2obj` (same construction as ``synthetic_lib``'s
-    ``pop_response_2obj``, but vectorized over neurons and trials)."""
+    :func:`expected_rates_2obj`."""
     prefs_ret = 2 * np.pi * np.arange(n_retinotopic) / max(n_retinotopic, 1)
     prefs_rel = 2 * np.pi * np.arange(n_relational) / max(n_relational, 1)
     kind = np.array(
@@ -89,21 +72,15 @@ def make_population(n_retinotopic, n_relational, baseline, amplitude):
 
 
 def n_neurons(pop):
-    # Synthetic pops carry a per-neuron 'mean'; a real-neural pop (see
-    # neural_task_lib) instead carries an explicit 'n_neurons' with a 'rate_fn'.
-    return pop["n_neurons"] if "n_neurons" in pop else len(pop["mean"])
+    return len(pop["mean"])
 
 
 def expected_rates_2obj(theta0, theta1, pop):
-    """``[n_query, n_neurons]`` expected 2-object firing rate. For a real-neural
-    pop (a ``'rate_fn'`` in ``pop`` — see ``neural_task_lib``) this defers to
-    that function (a kernel-weighted-mean lookup of real trials); otherwise it
-    is the synthetic ground truth: retinotopic neurons sum each object's own
-    cosine drive; relational neurons apply a double-frequency cosine to the
-    segment angle ``pair_vector_angle(t0, t1)``, oriented along the neuron's own
-    preferred direction (relational_angle=0)."""
-    if "rate_fn" in pop:
-        return pop["rate_fn"](theta0, theta1)
+    """``[n_query, n_neurons]`` expected 2-object firing rate, the synthetic
+    ground truth: retinotopic neurons sum each object's own cosine drive;
+    relational neurons apply a double-frequency cosine to the segment angle
+    ``pair_vector_angle(t0, t1)``, oriented along the neuron's own preferred
+    direction."""
     theta0 = np.atleast_1d(np.asarray(theta0, float))
     theta1 = np.atleast_1d(np.asarray(theta1, float))
     mu = pop["mean"][None, :]
@@ -144,13 +121,11 @@ def cue_features(theta0, theta1):
     ).astype(np.float32)
 
 
-def neural_sample(theta0, theta1, pop, rng, poisson=True):
-    """``[n, n_neurons]`` neural input: the population's expected 2-object rate,
-    Poisson-sampled (one noisy trial each) if ``poisson`` else the exact rate.
-    This is fixed input *data* — the population is not trained."""
-    rates = expected_rates_2obj(theta0, theta1, pop)
-    out = rng.poisson(rates) if poisson else rates
-    return out.astype(np.float32)
+def neural_sample(theta0, theta1, pop):
+    """``[n, n_neurons]`` neural input: the population's exact expected 2-object
+    rate (:class:`CueMatrixModel` Poisson-samples it itself). This is fixed input
+    *data* — the population is not trained."""
+    return expected_rates_2obj(theta0, theta1, pop).astype(np.float32)
 
 
 def target_bump(theta0, grid, sigma_deg):
@@ -162,123 +137,28 @@ def target_bump(theta0, grid, sigma_deg):
 
 
 # ── Model ────────────────────────────────────────────────────────────────────
-def _mlp(in_dim, hidden_sizes, out_dim, act=nn.ReLU):
-    """Feed-forward MLP from a list of hidden layer sizes (empty list => a
+def _mlp(in_dim, hidden_sizes, out_dim):
+    """Feed-forward ReLU MLP from a list of hidden layer sizes (empty list => a
     single linear layer)."""
     layers, d = [], in_dim
     for h in hidden_sizes:
-        layers += [nn.Linear(d, h), act()]
+        layers += [nn.Linear(d, h), nn.ReLU()]
         d = h
     layers += [nn.Linear(d, out_dim)]
     return nn.Sequential(*layers)
 
 
-# ── Cue weight-matrix constraints (used by CueMatrixModel) ──
-_INFLUENCE_KINDS = ("total_weight", "mean_weight", "max_weight")
-
-
-def _check_influence_args(cue_influence_kind, cue_influence_constraints):
-    """Validate the cue-weight constraint spec. When a ``cue_influence_constraints``
-    dict is given it wins; its keys must be a subset of ``_INFLUENCE_KINDS`` (any
-    value may be ``None`` = off). Otherwise ``cue_influence_kind`` must name one
-    of the single-statistic kinds."""
-    if cue_influence_constraints is not None:
-        bad = set(cue_influence_constraints) - set(_INFLUENCE_KINDS)
-        if bad:
-            raise ValueError(
-                f"cue_influence_constraints keys must be a subset of "
-                f"{_INFLUENCE_KINDS}; got unexpected {sorted(bad)}"
-            )
-    elif cue_influence_kind not in _INFLUENCE_KINDS:
-        raise ValueError(
-            f"cue_influence_kind must be one of {_INFLUENCE_KINDS}; "
-            f"got {cue_influence_kind!r}"
-        )
-
-
-def _cue_weights_single(logits, cue_influence, kind):
-    """Non-negative weights from a softmax base, scaled so the single statistic
-    named by ``kind`` equals ``cue_influence`` (sum / mean / max)."""
-    p = torch.softmax(logits, dim=0)
-    if kind == "total_weight":
-        return cue_influence * p
-    if kind == "mean_weight":
-        return cue_influence * p * p.numel()
-    if kind == "max_weight":
-        return cue_influence * p / p.max()
-    raise ValueError(
-        f"cue_influence_kind must be one of {_INFLUENCE_KINDS}; got {kind!r}"
-    )
-
-
-def _cue_weights_multi(logits, constraints):
-    """Non-negative weights satisfying **any combination** of the constraints in
-    ``constraints`` — a dict with optional ``total_weight`` / ``mean_weight`` /
-    ``max_weight``; a ``None`` value (or missing key) means that constraint is off.
-
-    ``total_weight`` and ``mean_weight`` both fix the entry **sum** (mean =
-    sum / N), so at most one may be set (they must agree if both). ``max_weight``
-    fixes the largest entry when used alone, or acts as a per-entry **cap** when
-    combined with a sum target — a capped-simplex water-fill giving the exact sum
-    with every entry <= ``max_weight`` (the cap binds, so max = ``max_weight``,
-    whenever the budget forces it). With no constraint set, ``W`` defaults to the
-    sum-1 softmax simplex. Always entrywise non-negative."""
-    p = torch.softmax(logits, dim=0)
-    n = p.numel()
-    total = constraints.get("total_weight")
-    mean = constraints.get("mean_weight")
-    cap = constraints.get("max_weight")
-
-    if total is not None and mean is not None:
-        if abs(float(total) - float(mean) * n) > 1e-6 * max(
-            1.0, abs(float(total))
-        ):
-            raise ValueError(
-                f"total_weight ({total}) and mean_weight ({mean}) both fix the sum "
-                f"but disagree (mean*{n} = {float(mean) * n}); set at most one."
-            )
-    sum_target = (
-        float(total)
-        if total is not None
-        else float(mean) * n if mean is not None else None
-    )
-    cap = None if cap is None else float(cap)
-
-    if sum_target is None and cap is None:
-        return p  # no constraint -> sum-1 simplex
-    if cap is None:
-        return sum_target * p  # sum = sum_target
-    if sum_target is None:
-        return cap * p / p.max()  # max = cap
-    # both: exact sum with a per-entry cap (capped simplex, water-filled gain).
-    if sum_target > cap * n + 1e-9:
-        raise ValueError(
-            f"infeasible constraints: total/sum {sum_target} > "
-            f"max_weight * {n} = {cap * n}."
-        )
-    with torch.no_grad():
-        lo = p.new_zeros(())
-        hi = p.new_tensor(cap / float(p.min()) + 1.0)
-        for _ in range(60):
-            g = 0.5 * (lo + hi)
-            below = torch.clamp(g * p, max=cap).sum() < sum_target
-            lo = torch.where(below, g, lo)
-            hi = torch.where(below, hi, g)
-        g = 0.5 * (lo + hi)
-    return torch.clamp(g * p, max=cap)
-
-
 class CueMatrixModel(nn.Module):
-    """Cue-response model (used by ``new_exploration/paper_draft_0/binding_capacity/synthetic_v3.ipynb``) where a
-    **Poisson-sampled** cue representation is projected through a **non-negative
-    weight matrix** into an additive delta on the neural state.
+    """Cue-response model where a **Poisson-sampled** cue representation is
+    projected through a **non-negative weight matrix** into an additive delta on
+    the neural state.
 
-    Pipeline (``neural`` is the exact population rate — build/train/eval with
-    ``neural_poisson=False``)::
+    Pipeline (``neural`` is the exact population rate, from
+    :func:`neural_sample`)::
 
         cue_rate   = cue_max_rate * sigmoid(cue_mlp(cue_feats))   # [., cue_output_neurons]
         cue_sample = Poisson(cue_rate)                            # straight-through
-        delta      = cue_sample @ W.T                             # W >= 0 (see cue_influence_kind)
+        delta      = cue_sample @ W.T                             # W >= 0, mean(W) = cue_influence
         combined   = ReLU(neural + delta)                        # [., n_neurons]
         noisy      = Poisson(combined)                           # straight-through
         out        = readout(noisy)                              # [., n_angles]
@@ -288,18 +168,13 @@ class CueMatrixModel(nn.Module):
     synaptically weighted into the population by ``W`` and then read out under
     the population's own Poisson noise (a second, separate draw).
 
-    ``W`` is ``[n_neurons, cue_output_neurons]`` and **entrywise non-negative**;
-    ``cue_influence`` fixes one summary statistic of it, selected by
-    ``cue_influence_kind`` — ``'total_weight'`` (its sum, the default and the
-    total synaptic budget), ``'mean_weight'`` (its mean), or ``'max_weight'``
-    (its largest entry). See :meth:`cue_weight_matrix` for the exact (softmax-
-    based) parameterization, which enforces both the non-negativity and the
-    chosen statistic at every step. ``cue_hidden`` / ``readout_hidden`` are lists
-    of hidden sizes. The cue nonlinearity is a sigmoid (a Poisson rate must be
-    non-negative), scaled by ``cue_max_rate``.
+    ``W`` is ``[n_neurons, cue_output_neurons]``, **entrywise non-negative**, and
+    its mean entry is fixed at ``cue_influence``. See :meth:`cue_weight_matrix`
+    for the exact (softmax-based) parameterization, which enforces both at every
+    step. ``cue_hidden`` / ``readout_hidden`` are lists of hidden sizes. The cue
+    nonlinearity is a sigmoid (a Poisson rate must be non-negative), scaled by
+    ``cue_max_rate``. The cue input is the 4-dimensional :func:`cue_features`.
     """
-
-    _INFLUENCE_KINDS = ("total_weight", "mean_weight", "max_weight")
 
     def __init__(
         self,
@@ -309,44 +184,27 @@ class CueMatrixModel(nn.Module):
         readout_hidden,
         cue_output_neurons,
         cue_max_rate,
-        cue_influence=1.0,
-        cue_influence_kind="total_weight",
-        cue_influence_constraints=None,
-        cue_in_dim=4,
+        cue_influence,
     ):
         super().__init__()
-        _check_influence_args(cue_influence_kind, cue_influence_constraints)
-        self.cue_mlp = _mlp(cue_in_dim, cue_hidden, cue_output_neurons)
+        self.cue_mlp = _mlp(4, cue_hidden, cue_output_neurons)
         self.readout = _mlp(n_neurons, readout_hidden, n_angles)
         self.cue_max_rate = float(cue_max_rate)
         self.cue_influence = float(cue_influence)
-        self.cue_influence_kind = cue_influence_kind
-        self.cue_influence_constraints = cue_influence_constraints
         self.n_neurons = int(n_neurons)
         self.cue_output_neurons = int(cue_output_neurons)
-        # Unconstrained logits -> a non-negative W (softmax base) rescaled to meet
-        # the requested constraint(s) (see cue_weight_matrix). Zero-init => uniform.
+        # Unconstrained logits -> a non-negative W (softmax base) rescaled to the
+        # requested mean (see cue_weight_matrix). Zero-init => uniform.
         self.cue_weight_logits = nn.Parameter(
             torch.zeros(n_neurons * cue_output_neurons)
         )
 
     def cue_weight_matrix(self):
-        """Non-negative ``[n_neurons, cue_output_neurons]`` cue→state weights,
-        built from a softmax base. If ``cue_influence_constraints`` is set (a dict
-        with optional ``total_weight`` / ``mean_weight`` / ``max_weight``), meet
-        that **combination** of constraints (:func:`_cue_weights_multi`);
-        otherwise scale so the single statistic named by ``cue_influence_kind``
-        equals ``cue_influence`` (:func:`_cue_weights_single`)."""
-        if self.cue_influence_constraints is not None:
-            w = _cue_weights_multi(
-                self.cue_weight_logits, self.cue_influence_constraints
-            )
-        else:
-            w = _cue_weights_single(
-                self.cue_weight_logits,
-                self.cue_influence,
-                self.cue_influence_kind,
-            )
+        """Non-negative ``[n_neurons, cue_output_neurons]`` cue→state weights:
+        a softmax base ``p`` (positive, summing to 1) scaled so the mean entry
+        equals ``cue_influence``."""
+        p = torch.softmax(self.cue_weight_logits, dim=0)
+        w = self.cue_influence * p * p.numel()
         return w.view(self.n_neurons, self.cue_output_neurons)
 
     def cue_rate(self, cue_feats):
@@ -354,24 +212,20 @@ class CueMatrixModel(nn.Module):
         ``[., cue_output_neurons]``."""
         return self.cue_max_rate * torch.sigmoid(self.cue_mlp(cue_feats))
 
-    def cue_delta(self, cue_feats, sample=True):
-        """The additive delta on the neural state: the (Poisson-sampled) cue
+    def cue_delta(self, cue_feats):
+        """The additive delta on the neural state: the Poisson-sampled cue
         representation projected through the non-negative weight matrix,
         ``[., n_neurons]``."""
         rate = self.cue_rate(cue_feats)
-        if sample:
-            noisy = torch.poisson(rate)
-            rate = rate + (noisy - rate).detach()  # straight-through
+        noisy = torch.poisson(rate)
+        rate = rate + (noisy - rate).detach()  # straight-through
         return rate @ self.cue_weight_matrix().t()
 
-    def forward(self, neural, cue_feats, sample_cue=True):
-        combined = torch.relu(
-            neural + self.cue_delta(cue_feats, sample=sample_cue)
-        )
-        if sample_cue:
-            noisy = torch.poisson(combined)
-            # Straight-through on the population draw, as in CueAdditiveModel.
-            combined = combined + (noisy - combined).detach()
+    def forward(self, neural, cue_feats):
+        combined = torch.relu(neural + self.cue_delta(cue_feats))
+        noisy = torch.poisson(combined)
+        # Straight-through on the population draw.
+        combined = combined + (noisy - combined).detach()
         return self.readout(combined)
 
 
@@ -383,21 +237,20 @@ def make_batch(
     grid,
     target_sigma_deg,
     rng,
-    neural_poisson=True,
 ):
     """One training batch: returns ``(theta0, theta1, neural, cue, target)`` as
     numpy arrays (float32 for the tensors)."""
     theta0, theta1 = sample_stimuli(batch_size, min_sep_deg, rng)
-    neural = neural_sample(theta0, theta1, pop, rng, poisson=neural_poisson)
+    neural = neural_sample(theta0, theta1, pop)
     cue = cue_features(theta0, theta1)
     target = target_bump(theta0, grid, target_sigma_deg)
     return theta0, theta1, neural, cue, target
 
 
-def train_model(model, pop, cfg, rng, device="cpu", log_every=200):
+def train_model(model, pop, cfg, rng, log_every=200):
     """Train the readout + cue MLPs with Adam on MSE loss. ``cfg`` is a dict
     with keys ``n_angles, min_sep_deg, target_sigma_deg, batch_size, n_steps,
-    lr, neural_poisson``. Returns ``(losses, grid)``."""
+    lr``. Returns ``(losses, grid)``."""
     grid = stimulus_grid(cfg["n_angles"])
     opt = torch.optim.Adam(model.parameters(), lr=cfg["lr"])
     losses = []
@@ -410,13 +263,12 @@ def train_model(model, pop, cfg, rng, device="cpu", log_every=200):
             grid,
             cfg["target_sigma_deg"],
             rng,
-            cfg.get("neural_poisson", True),
         )
-        neural_t = torch.as_tensor(neural, device=device)
-        cue_t = torch.as_tensor(cue, device=device)
-        target_t = torch.as_tensor(target, device=device)
+        neural_t = torch.as_tensor(neural)
+        cue_t = torch.as_tensor(cue)
+        target_t = torch.as_tensor(target)
 
-        out = model(neural_t, cue_t, sample_cue=True)
+        out = model(neural_t, cue_t)
         loss = ((out - target_t) ** 2).mean()
         opt.zero_grad()
         loss.backward()
@@ -425,15 +277,3 @@ def train_model(model, pop, cfg, rng, device="cpu", log_every=200):
         if log_every and (step % log_every == 0 or step == cfg["n_steps"] - 1):
             print(f'step {step:5d}/{cfg["n_steps"]}  MSE={loss.item():.4f}')
     return losses, grid
-
-
-# ── Evaluation ───────────────────────────────────────────────────────────────
-
-
-# ── Plots ────────────────────────────────────────────────────────────────────
-
-
-# ── Binding metrics (folded in from binding_capacity/titration_lib.py) ────────
-
-
-# ── Cue-channel information (bits per trial) ──────────────────────────────────

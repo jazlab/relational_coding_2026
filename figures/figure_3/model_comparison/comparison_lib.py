@@ -15,14 +15,10 @@ scale. Nothing about the shape of a tuning curve survives this -- only the *rank
 -- so the comparison is invariant to any monotone reshaping of the tuning function, and the
 three models are commensurable however differently shaped their predictions are.
 
-A graded alternative -- a Bradley-Terry fit whose likelihood was ``logistic(beta * Delta_s)``,
-so the magnitude of ``Delta_s`` mattered and a model could be confident -- was figure 3b until
-2026-09-13. That magnitude is a **tuning-shape assumption**: ``cos(u_i - c) - cos(u_j - c)``
-asserts not just which trial fires more but by how much, graded like a cosine, and a fitted
-``beta`` absorbs a global mis-scaling but not a difference in the *shape* of ``Delta_s`` between
-models -- which is exactly where proximity (a tent in separation) differs from the two slope
-models (cosines in an angle). It was removed for that reason; the two agreed on the winning
-model for 92% of neurons.
+Only the sign of ``Delta_s`` is used because its magnitude would be a **tuning-shape
+assumption**: ``cos(u_i - c) - cos(u_j - c)`` asserts not just which trial fires more but by how
+much, graded like a cosine, and that shape differs between proximity (a tent in separation) and
+the two slope models (cosines in an angle).
 
 The anchor weights stay analog (see :func:`pairs_lib.build_comparisons`). They say which pairs
 of trials are comparable, not what a model predicts, so they carry no tuning assumption.
@@ -43,9 +39,8 @@ endpoints and sweeping. No grid, no optimiser, no local optima, and ``O(N log N)
 Proximity is the same algorithm on a line. ``|d_i - d*| < |d_j - d*|`` flips exactly when ``d*``
 crosses the midpoint ``m = (d_i + d_j)/2``, so each comparison is correct on a **half-line** of
 ``d*``; sort the midpoints and sweep. Its "prefers ``d*``" and "avoids ``d*``" branches are
-complements of each other on the decided set, so the polarity comes free rather than being
-excluded as :func:`pairs_lib.fit_separation` has to exclude it -- **the sign-only version has
-no positive-only restriction, and all three models search their full hypothesis space.**
+complements of each other on the decided set, so the polarity comes free: there is no
+positive-only restriction, and all three models search their full hypothesis space.
 
 Each model spends exactly **one** parameter (``c`` or ``d*`` plus a polarity that is free for the
 slope models, being ``c -> c + pi``). There is no ``beta``.
@@ -55,9 +50,10 @@ What is lost
 Power. A comparison whose two stimuli sit nearly equidistant from ``c`` is a coin flip, and an
 accuracy counts it at full weight as a 50/50 win or loss where a likelihood would correctly
 discount it. Accuracy is therefore diluted by uninformative comparisons, and effect sizes are
-smaller than a graded score's would be. :func:`disagreement_test` is the answer where the
-question is *which model is right*: it scores only the comparisons on which two models predict
-**different** orderings, which is where all the discriminating information is.
+smaller than a graded score's would be. The pairwise disagreement test
+(:func:`disagreement_pieces`) is the answer where the question is *which model is right*: it
+scores only the comparisons on which two models predict **different** orderings, which is
+where all the discriminating information is.
 """
 
 import numpy as np
@@ -135,8 +131,6 @@ def fit_separation_sign(c, mask=None):
 
     ``prefer=False`` is the "avoids this separation" branch, which is the complement of the
     "prefers" branch on the decided set and so costs one subtraction rather than a second fit.
-    `pairs_lib.fit_separation` has to exclude that branch (``positive_only``); nothing here
-    does.
     """
     sel = slice(None) if mask is None else mask
     di = np.asarray(c["di"][sel], float)
@@ -185,8 +179,8 @@ def cv_sign(c, kind, n_folds=5, seed=0):
 
     Returns ``(correct, pred, w, i, j)`` over the test comparisons of every fold, each scored by
     the parameter fitted on the folds that excluded both of its trials. Uses
-    :func:`pairs_lib.fold_masks` with the same ``seed`` as the graded analysis, so the three
-    models -- and the two analyses -- share folds and every comparison is paired.
+    :func:`pairs_lib.fold_masks` with the same ``seed`` for every model, so the three models
+    share folds and every comparison is paired.
     """
     if len(c["w"]) < 40:
         return (np.zeros(0),) * 3 + (np.zeros(0, int),) * 2
@@ -234,21 +228,17 @@ def weighted_accuracy(correct, w):
 # ── Uncertainty: resample TRIALS, never comparisons ───────────────────────────
 #
 # Every statistic here is bootstrapped by **one shared loop over replicates**, and replicate `b`
-# is seeded from ``(seed, b)`` alone. Two things follow, and both are deliberate:
-#
-# * within a replicate all three models and all three pairwise contrasts see the **same** trial
-#   resample, so differences between them are paired rather than carrying independent noise;
-# * replicates are **addressable**. Running b = 0..499 now and b = 500..999 later produces
-#   exactly the 1000 draws a single 1000-replicate run would have produced, so a bootstrap can
-#   be extended by computing only the new replicates. The draws themselves are written to disk
-#   per session (see `run_comparison_cache.py`) and the p-values are recomputed from their union by
-#   :func:`p_from_draws` — nothing is re-drawn and no p-value is averaged.
+# is seeded from ``(seed, b)`` alone, so within a replicate all three models and all three
+# pairwise contrasts see the **same** trial resample, and differences between them are paired
+# rather than carrying independent noise. The draws themselves are written to disk per session
+# (see `run_comparison_cache.py`) and the p-values are computed from them by
+# :func:`p_from_draws`.
 #
 # Nothing is refitted inside a replicate: the held-out correctness of every comparison is already
 # known and a resample only reweights it. That is what makes the loop cheap (~0.9 ms per
-# replicate per neuron) and it is the same construction `pairs_lib.paired_bootstrap` uses.
+# replicate per neuron).
 
-#: The per-replicate quantities written to disk, in the order `bootstrap_chunk` returns them.
+#: The per-replicate quantities written to disk, in the order `bootstrap_draws` returns them.
 BOOT_STATS = tuple(f"acc_{m}" for m in MODELS) + tuple(
     f"prop_{a}_vs_{b}"
     for a, b in (
@@ -259,28 +249,18 @@ BOOT_STATS = tuple(f"acc_{m}" for m in MODELS) + tuple(
 )
 
 
-def weighted_accuracy(correct, w):
-    """The score: weighted fraction of held-out comparisons called correctly."""
-    tot = float(np.asarray(w, float).sum())
-    if not len(w) or tot <= 0:
-        return np.nan
-    return float(
-        (np.asarray(w, float) * np.asarray(correct, float)).sum() / tot
-    )
-
-
-def bootstrap_chunk(pieces, n_trials, boot_lo, boot_hi, seed=0):
-    """Weighted accuracies for replicates ``[boot_lo, boot_hi)``, one row per statistic.
+def bootstrap_draws(pieces, n_trials, n_boot, seed=0):
+    """Weighted accuracies for replicates ``0..n_boot-1``, one row per statistic.
 
     ``pieces`` maps a statistic name to ``(correct, w, i, j)``. Returns
-    ``{name: array of length boot_hi - boot_lo}``.
+    ``{name: array of length n_boot}``.
     """
     names = list(pieces)
-    out = {k: np.full(boot_hi - boot_lo, np.nan, np.float32) for k in names}
+    out = {k: np.full(n_boot, np.nan, np.float32) for k in names}
     usable = {k: v for k, v in pieces.items() if v is not None and len(v[1])}
     if not usable:
         return out
-    for slot, b in enumerate(range(boot_lo, boot_hi)):
+    for b in range(n_boot):
         rng = np.random.default_rng([int(seed), int(b)])
         m = np.bincount(
             rng.integers(0, n_trials, n_trials), minlength=n_trials
@@ -289,11 +269,11 @@ def bootstrap_chunk(pieces, n_trials, boot_lo, boot_hi, seed=0):
             ww = w * m[i] * m[j]
             tot = ww.sum()
             if tot > 0:
-                out[k][slot] = (ww * corr).sum() / tot
+                out[k][b] = (ww * corr).sum() / tot
     return out
 
 
-def _one_sided_p(draws, side="greater"):
+def _one_sided_p(draws):
     """p for "the statistic exceeds chance", from the draws. ``(k + 1)/(B + 1)``, so it is
     never zero and its floor states the resolution the replicate count bought.
     """
@@ -301,7 +281,7 @@ def _one_sided_p(draws, side="greater"):
     d = d[np.isfinite(d)]
     if not len(d):
         return np.nan
-    k = np.sum(d <= CHANCE) if side == "greater" else np.sum(d >= CHANCE)
+    k = np.sum(d <= CHANCE)
     return float((k + 1.0) / (len(d) + 1.0))
 
 
@@ -314,28 +294,24 @@ def _two_sided_p(draws):
     return float(min(1.0, 2.0 * min(frac, 1.0 - frac) + 1.0 / (len(d) + 1.0)))
 
 
-def win_fractions(draws, models=MODELS):
-    """``P(model wins | resampling the trials)`` -- the sign-only stand-in for the graded
-    figure's ``P(model | data)``.
+def win_fractions(draws):
+    """``P(model wins | resampling the trials)``.
 
     For each bootstrap replicate the three models are scored on the **same** trial resample (see
-    :func:`bootstrap_chunk`), so "which of them is highest in this replicate" is a meaningful
+    :func:`bootstrap_draws`), so "which of them is highest in this replicate" is a meaningful
     question. The fraction of replicates each model wins is therefore a well-defined quantity
-    on [0, 1] whose three values sum to 1, with 1/3 the uninformative value -- the same visual
-    grammar as the graded softmax panel, and none of its problems.
+    on [0, 1] whose three values sum to 1, with 1/3 the uninformative value.
 
     **It is not a posterior and it is not a likelihood.** No likelihood exists here: a sign-only
     score has none. What this measures is the *stability of the ranking under resampling the
     trials* -- how often this model would come out on top had the animal run a different draw of
-    the same trials. The graded figure's softmax needs an evidence scale (it uses the trial
-    count as a stand-in, on a per-comparison likelihood, which is why its own docstring says it
-    is not calibrated); this needs nothing beyond the replicates already computed.
+    the same trials. It needs no evidence scale, only the replicates already computed.
 
     Ties share the win equally. Replicates where any model is missing are dropped.
     """
-    A = np.vstack([np.asarray(draws[f"acc_{m}"], float) for m in models])
+    A = np.vstack([np.asarray(draws[f"acc_{m}"], float) for m in MODELS])
     ok = np.all(np.isfinite(A), axis=0)
-    out = {f"{m}_win_frac": np.nan for m in models}
+    out = {f"{m}_win_frac": np.nan for m in MODELS}
     out["n_win_replicates"] = int(ok.sum())
     if not ok.any():
         return out
@@ -343,16 +319,15 @@ def win_fractions(draws, models=MODELS):
     top = A.max(axis=0)
     hit = (A == top[None, :]).astype(float)
     hit /= hit.sum(axis=0, keepdims=True)  # split ties
-    for m, v in zip(models, hit.mean(axis=1)):
+    for m, v in zip(MODELS, hit.mean(axis=1)):
         out[f"{m}_win_frac"] = float(v)
     return out
 
 
 def p_from_draws(draws):
-    """Every bootstrap p-value, from the union of however many replicates exist.
+    """Every bootstrap p-value, from the per-replicate draws.
 
-    ``draws`` maps the names in :data:`BOOT_STATS` to 1-D arrays. Call it on the concatenation
-    of two chunks and the result is exactly what one run of that many replicates would give.
+    ``draws`` maps the names in :data:`BOOT_STATS` to 1-D arrays.
     """
     out = {
         "n_boot_used": int(
@@ -421,17 +396,16 @@ def fit_neuron_sign(
     sigma_deg=pairs.SIGMA_DEG,
     n_folds=5,
     seed=0,
-    boot_lo=0,
-    boot_hi=N_BOOT,
-    max_comparisons=pairs.MAX_COMPARISONS,
-    sep_max_comparisons=pairs.SEP_MAX_COMPARISONS,
+    n_boot=N_BOOT,
 ):
     """Every sign-only quantity for one neuron: ``(row, draws)``.
 
     ``row`` is a flat dict — the fitted parameter, the held-out accuracy and its excess over
-    chance per model, the three pairwise disagreement summaries, and the p-values implied by
-    this chunk of replicates. ``draws`` holds the per-replicate values themselves, keyed by
-    :data:`BOOT_STATS`, so a later chunk can be concatenated and the p-values recomputed.
+    chance per model, the three pairwise disagreement summaries, and the bootstrap p-values.
+    ``draws`` holds the per-replicate values themselves, keyed by :data:`BOOT_STATS`.
+
+    Every comparison is used: no cap is applied (``max_comparisons=0``), since the fit is
+    O(N log N) in rows and the precision is set by the number of trials.
     """
     out = {"sigma_deg": sigma_deg, "n_folds": n_folds}
     sets, cvs = {}, {}
@@ -445,7 +419,7 @@ def fit_neuron_sign(
             k,
             sigma_deg,
             seed=seed,
-            max_comparisons=max_comparisons,
+            max_comparisons=0,
         )
         sets[name] = c
         c_hat, acc_tr = fit_slope_sign(c)
@@ -466,7 +440,7 @@ def fit_neuron_sign(
         cvs[name] = cv_sign(c, "slope", n_folds, seed)
 
     c = pairs.build_separation_comparisons(
-        t0, t1, fr2, sigma_deg, seed=seed, max_comparisons=sep_max_comparisons
+        t0, t1, fr2, sigma_deg, seed=seed, max_comparisons=0
     )
     sets["proximity"] = c
     d_star, prefer, acc_tr = fit_separation_sign(c)
@@ -499,9 +473,9 @@ def fit_neuron_sign(
         for key, v in summary.items():
             out[f"{a}_vs_{b}_{key}"] = v
 
-    draws = bootstrap_chunk(pieces, n_trials, boot_lo, boot_hi, seed=seed + 7)
+    draws = bootstrap_draws(pieces, n_trials, n_boot, seed=seed + 7)
     out.update(p_from_draws(draws))
-    out["boot_lo"], out["boot_hi"] = int(boot_lo), int(boot_hi)
+    out["boot_lo"], out["boot_hi"] = 0, int(n_boot)
 
     accs = {m: out[f"{m}_acc"] for m in MODELS}
     best = max(
@@ -514,7 +488,7 @@ def fit_neuron_sign(
 
 
 def _pair_pieces(cvs, a, b, n_trials):
-    """Run :func:`disagreement_test` on the comparisons both models scored.
+    """Run :func:`disagreement_pieces` on the comparisons both models scored.
 
     The two slope models share a comparison set row for row. Proximity's set is one row per
     trial pair rather than four, so the two are joined on ``(i, j)`` -- the trial pair -- and a
@@ -547,19 +521,14 @@ def _pair_pieces(cvs, a, b, n_trials):
 
 
 # ── Reading the fitted table ──────────────────────────────────────────────────
-from pathlib import Path  # noqa: E402
-
 import pandas as pd  # noqa: E402
 import stats_lib as sl  # noqa: E402
 
 CACHE_DIR = sl.CACHE_DIR
 UNITS_PATH = CACHE_DIR / "comparison_units.csv"
 
-#: Threshold for a pairwise disagreement test, and for beating a constant model.
+#: Threshold for a pairwise disagreement test.
 DECISIVE_Q = 0.05
-NULL_Q = 0.05
-
-_PAIRS = _PAIR_NAMES
 
 
 def load_units(path=UNITS_PATH):
@@ -581,76 +550,42 @@ def _holm(pvals, q):
     return rej
 
 
-def add_decisive(
-    units,
-    rule="nearest",
-    require_beats_null=False,
-    q=DECISIVE_Q,
-    null_q=NULL_Q,
-):
-    """Add ``decisive`` and ``call`` under one of the two readings of the bar chart.
+def add_decisive(units, q=DECISIVE_Q):
+    """Add ``decisive`` and ``call``: which neurons one model distinguishably wins.
 
-    ``rule='nearest'`` -- every neuron is labelled by its highest held-out accuracy, with no
-    test and nothing undecided. This answers "which model is *nearest*", and it is what the
-    graded figure currently shows.
-
-    ``rule='distinguishable'`` -- the winner must beat **both** of the other two models on the
-    comparisons where it and they predict different orderings (:func:`disagreement_test`), with
-    the two tests Holm-corrected within the neuron. Everything else is ``undecided``, and the
-    size of that category is itself a result about how separable these hypotheses are. This is
-    the stronger claim and will report smaller numbers.
-
-    ``require_beats_null`` additionally demands the winner predict held-out orderings better
-    than chance at ``null_q`` -- chance being exactly what a constant-rate model achieves, since
-    a neuron with no stimulus dependence cannot order two trials at all. Without it, a neuron
-    every model fails on is still assigned to whichever failed least.
+    The winner must beat **both** of the other two models on the comparisons where it and
+    they predict different orderings (:func:`disagreement_pieces`), with the two tests
+    Holm-corrected at ``q`` within the neuron. Everything else is ``undecided``, and the size of
+    that category is itself a result about how separable these hypotheses are.
     """
-    if rule not in ("nearest", "distinguishable"):
-        raise ValueError(
-            f"rule must be 'nearest' or 'distinguishable', not {rule!r}"
-        )
     u = units.copy()
     win = u["best_model"].to_numpy(object)
     ok = pd.notna(u["best_model"]).to_numpy()
-
-    if rule == "nearest":
-        decisive = ok.copy()
-    else:
-        decisive = np.zeros(len(u), bool)
-        for r in range(len(u)):
-            if not ok[r]:
+    decisive = np.zeros(len(u), bool)
+    for r in range(len(u)):
+        if not ok[r]:
+            continue
+        ps, wins = [], []
+        for a, b in _PAIR_NAMES:
+            if win[r] not in (a, b):
                 continue
-            ps, wins = [], []
-            for a, b in _PAIRS:
-                if win[r] not in (a, b):
-                    continue
-                p = u[f"{a}_vs_{b}_p"].iat[r]
-                prop = u[f"{a}_vs_{b}_prop_a"].iat[r]
-                if not (np.isfinite(p) and np.isfinite(prop)):
-                    ps, wins = [np.nan], [False]
-                    break
-                ps.append(p)
-                # `prop_a` is the share the FIRST model of the pair gets right.
-                wins.append(prop > CHANCE if win[r] == a else prop < CHANCE)
-            if len(ps) == 2 and all(np.isfinite(ps)):
-                decisive[r] = bool(np.all(_holm(ps, q)) and all(wins))
-
-    if require_beats_null:
-        bn = u["beats_null_p"].to_numpy(float)
-        decisive &= np.isfinite(bn) & (bn < null_q)
+            p = u[f"{a}_vs_{b}_p"].iat[r]
+            prop = u[f"{a}_vs_{b}_prop_a"].iat[r]
+            if not (np.isfinite(p) and np.isfinite(prop)):
+                ps, wins = [np.nan], [False]
+                break
+            ps.append(p)
+            # `prop_a` is the share the FIRST model of the pair gets right.
+            wins.append(prop > CHANCE if win[r] == a else prop < CHANCE)
+        if len(ps) == 2 and all(np.isfinite(ps)):
+            decisive[r] = bool(np.all(_holm(ps, q)) and all(wins))
 
     u["decisive"] = decisive
     u["call"] = np.where(decisive, u["best_model"], "undecided")
-    u.attrs.update(
-        rule=rule,
-        q=float(q),
-        null_q=float(null_q),
-        require_beats_null=bool(require_beats_null),
-    )
     return u
 
 
-def win_table(units, models=MODELS):
+def win_table(units):
     """Three-way counts per subject, with the undecided share beside them."""
     rows = []
     for s in sl.ordered_subjects(units):
@@ -661,7 +596,7 @@ def win_table(units, models=MODELS):
             "n": len(g),
             "decisive": len(dec),
         }
-        for m in models:
+        for m in MODELS:
             row[m] = int((dec["call"] == m).sum())
         row["undecided"] = int(len(g) - len(dec))
         row["undecided_pct"] = 100.0 * row["undecided"] / max(len(g), 1)
@@ -670,301 +605,22 @@ def win_table(units, models=MODELS):
 
 
 # ── The figure ────────────────────────────────────────────────────────────────
-def plot_model_comparison(
-    units,
-    figsize=(5.4, 5.2),
-    models=MODELS,
-    bar_headroom=1.12,
-    label_fontsize=12,
-    title_fontsize=14,
-    wspace=None,
-    w_pad=None,
-    column_shift_in=0.0,
-    violin_kw=None,
-    ylabel="Held-out accuracy",
-    show_acc_row=False,
-    show_win_row=True,
-    win_ylabel="P(model wins)",
-    decisive_line=True,
-    decisive_line_color="0.35",
-    decisive_line_ls="-",
-    decisive_line_lw=1.2,
-    counts_on_top=True,
-    show_tail_row=False,
-    tail_kw=None,
-    row_shift_in=0.0,
-):
-    """Two rows, one column per subject: the counts, then per-neuron held-out accuracy.
-
-    ``row_shift_in`` sets the vertical whitespace between rows: each row below the first is slid
-        UP by ``row_shift_in`` INCHES per row once the layout has settled, so positive values close the
-        gaps and negative ones open them. Like ``column_shift_in``, it overrides the layout engine, so
-        nothing stops it running one row's labels into the next.
-
-    ``show_tail_row`` adds :func:`plot_tail_fractions`'s curves as a row (after any violin rows),
-        with ``tail_kw`` passed through to it. Its legend goes in one row across the figure, between
-        the column titles and the top row's axes, and its ``N = ...`` sits at the panel's top left.
-
-    ``counts_on_top=False`` flips the order, putting the count row below the violins; the column
-        titles stay on the top row and the model names on the bottom one either way.
-
-    ``show_acc_row`` adds the raw score the models are compared on -- the weighted fraction of
-        held-out comparisons each calls correctly, with chance at 1/2. It is off by default: it and
-        the win row say the same thing twice, and the win row says it on a bounded, summing-to-one
-        axis. Turn it on to see the scores themselves rather than the ranking they produce.
-
-    The violins are drawn over **every** neuron in the subject, while the bars above them count
-        only the decisive ones. ``decisive_line`` marks where the one sits inside the other: a solid
-        rule at the **lowest winning ``win_frac`` among the neurons the bars counted**, so every
-        neuron in row 1 has its winner above that line. Solid, so that it reads as a different kind
-        of statement from the dashed black chance line: chance is fixed by construction, this one is
-        measured from the data in hand.
-
-        It is an *empirical* separatrix and not a definition, which is the honest way to read it.
-        Decisiveness is a per-neuron exact test on the comparisons where two models disagree
-        (:func:`add_decisive`), not a threshold on ``win_frac`` — the two quantities simply happen
-        to agree almost perfectly here: with ``rule='distinguishable'`` at q = 0.05 the line lands at
-        0.973 (Monkey P) and 0.971 (Monkey E), no decisive neuron falls below it by construction, and
-        only 6 of 515 and 2 of 215 undecided neurons rise above it. A different rule or q moves the
-        line, because it is computed from the data in hand rather than fixed.
-
-        The second row (``show_win_row``) is the sign-only stand-in for the graded figure's
-        ``P(model | data)``: :func:`win_fractions`, the fraction of trial resamples in which each
-        model has the highest held-out accuracy. Its three values **do** sum to 1 within a neuron,
-        so the dashed line at 1/3 is chance *and* the mean over the whole panel -- a fact about the
-        quantity rather than a fitted reference, exactly as in the graded figure. It shows the
-        distribution behind row 1: a neuron whose winner is pinned near 1 is one whose ranking is
-        stable under resampling, and a neuron sitting near 1/3 on all three is one where the bar
-        chart's argmax is a coin toss. See :func:`win_fractions` for why this is not a likelihood
-        and why it needs no evidence scale.
-    """
-    from matplotlib import pyplot as plt
-
-    subjects = sl.ordered_subjects(units)
-    models = list(models)
-    kw = dict(violin_alpha=0.45, point_size=3, point_alpha=0.25, jitter=0.22)
-    kw.update(violin_kw or {})
-    xtick_rotation = kw.pop("xtick_rotation", 20)
-    xtick_shift_in = kw.pop("xtick_shift_in", 0.0)
-    # (x, y) of the `N = ...` annotation, in AXES FRACTIONS: (0, 0) is the bottom left of the
-    # panel and (1, 1) the top right, so values outside [0, 1] put it outside the axes.
-    n_position = kw.pop("n_position", (0.98, 0.98))
-    n_fontsize = kw.pop("n_fontsize", 12)
-
-    tail_kw = dict(tail_kw or {})
-    legend_dy_in = tail_kw.pop("legend_dy_in", 0.0)
-    title_pad = tail_kw.pop("title_pad", 30)
-    n_rows = 1 + int(show_acc_row) + int(show_win_row) + int(show_tail_row)
-    if n_rows == 1:
-        raise ValueError(
-            "nothing to draw below the counts: enable show_acc_row, show_win_row "
-            "or show_tail_row"
-        )
-    fig, axes = plt.subplots(
-        n_rows,
-        len(subjects),
-        figsize=figsize,
-        squeeze=False,
-        sharex=False,
-        sharey=False,
-        layout="constrained",
-    )
-    if wspace is not None or w_pad is not None:
-        eng = {}
-        if wspace is not None:
-            eng["wspace"] = wspace
-        if w_pad is not None:
-            eng["w_pad"] = w_pad
-        fig.get_layout_engine().set(**eng)
-
-    # Row indices: the count row and, in order, the violin rows.
-    cnt_r = 0 if counts_on_top else n_rows - 1
-    vio_rs = [r for r in range(n_rows) if r != cnt_r]
-
-    def _label_models(ax):
-        ax.set_xticklabels(
-            [sl.SHORT[m] for m in models],
-            fontsize=12,
-            rotation=xtick_rotation,
-            ha="right" if xtick_rotation else "center",
-        )
-        if xtick_shift_in:
-            from matplotlib.transforms import ScaledTranslation
-
-            off = ScaledTranslation(xtick_shift_in, 0.0, fig.dpi_scale_trans)
-            for lab in ax.get_xticklabels():
-                lab.set_transform(lab.get_transform() + off)
-
-    for ci, s in enumerate(subjects):
-        g = units[units["subject"] == s]
-        dec = g[g["decisive"]]
-        ax = axes[cnt_r][ci]
-        counts = dec["call"].value_counts().reindex(models).fillna(0)
-        ax.bar(
-            range(1, len(models) + 1),
-            counts.values,
-            color=[sl.MODEL_COLORS[m] for m in models],
-            edgecolor="k",
-            linewidth=0.5,
-        )
-        for i, m in enumerate(models):
-            ax.text(
-                i + 1,
-                counts[m],
-                f"{int(counts[m])}",
-                ha="center",
-                va="bottom",
-                fontsize=12,
-            )
-        ax.set_ylim(0, max(counts.max(), 1) * bar_headroom)
-        ax.set_xticks(range(1, len(models) + 1))
-        if counts_on_top:
-            ax.set_xticklabels([])
-        else:
-            _label_models(ax)
-        # Room under the titles for the legend, when it sits on the top row.
-        pad = title_pad if show_tail_row else None
-        axes[0][ci].set_title(
-            sl.subject_title(s), fontsize=title_fontsize, pad=pad
-        )
-        sl._despine(ax)
-
-        rows = []
-        if show_acc_row:
-            rows.append(("acc", CHANCE, not show_win_row))
-        if show_win_row:
-            rows.append(("win_frac", 1.0 / len(models), True))
-        for k, (suffix, chance, is_last) in enumerate(rows):
-            ri = vio_rs[k]
-            is_last = is_last and counts_on_top
-            ax = axes[ri][ci]
-            vals = [
-                g[f"{m}_{suffix}"].dropna().to_numpy(float) for m in models
-            ]
-            sl._violin(ax, vals, [sl.MODEL_COLORS[m] for m in models], **kw)
-            ax.axhline(chance, color="k", ls="--", lw=1.0, zorder=4)
-            if decisive_line and suffix == "win_frac" and len(dec):
-                # The lowest winning win_frac among the neurons the bars counted: everything in
-                # row 1 sits above this, and it is measured from this subject's own neurons
-                # rather than assumed, so it follows the rule and q actually used.
-                cut = float(
-                    dec[[f"{m}_win_frac" for m in models]].max(axis=1).min()
-                )
-                ax.axhline(
-                    cut,
-                    color=decisive_line_color,
-                    ls=decisive_line_ls,
-                    lw=decisive_line_lw,
-                    zorder=4,
-                )
-            ax.set_xticks(range(1, len(models) + 1))
-            if is_last:
-                _label_models(ax)
-            else:
-                ax.set_xticklabels([])
-            if suffix == "win_frac":
-                ax.set_ylim(-0.02, 1.02)
-                ax.set_yticks([0, 0.5, 1])
-                ax.set_yticklabels(["0", "0.5", "1"])
-            if k == 0:
-                ax.text(
-                    *n_position,
-                    f"N = {len(g)}",
-                    transform=ax.transAxes,
-                    ha="right",
-                    va="top",
-                    fontsize=n_fontsize,
-                )
-            if ci:
-                ax.set_yticklabels([])
-            sl._despine(ax)
-        if show_tail_row:
-            ax = axes[vio_rs[len(rows)]][ci]
-            plot_tail_fractions(
-                ax, g, models=models, show_n=not rows, **tail_kw
-            )
-            if ci:
-                ax.set_yticklabels([])
-                ax.set_ylabel("")
-
-    # The figure's only axis labels, at the style block's `axes.labelsize`; the column titles
-    # above them are `title_fontsize`, matching its `axes.titlesize`.
-    axes[cnt_r][0].set_ylabel("# Units", fontsize=label_fontsize)
-    row = vio_rs[0]
-    if show_acc_row:
-        lo = min(float(np.nanmin(units[f"{m}_acc"])) for m in models)
-        for ci in range(len(subjects)):
-            axes[row][ci].set_ylim(min(lo, CHANCE) - 0.02, None)
-        axes[row][0].set_ylabel(ylabel, fontsize=label_fontsize)
-        row += 1
-    if show_win_row:
-        axes[row][0].set_ylabel(win_ylabel, fontsize=label_fontsize)
-    sl._pull_columns_together(fig, axes, column_shift_in)
-    _pull_rows_together(fig, axes, row_shift_in)
-    if show_tail_row:
-        # Placed once the layout has settled, centred over the top row as finally laid out.
-        # Constrained layout ignores a figure legend it is not told is 'outside', so this
-        # does not move anything else.
-        fig.canvas.draw()
-        top = axes[0]
-        left, right = top[0].get_position().x0, top[-1].get_position().x1
-        y = top[0].get_position().y1 + legend_dy_in / fig.get_figheight()
-        handles, labels = axes[vio_rs[-1]][0].get_legend_handles_labels()
-        fig.legend(
-            handles,
-            labels,
-            ncol=len(models),
-            loc="lower center",
-            bbox_to_anchor=(0.5 * (left + right), y),
-            frameon=True,
-            fancybox=True,
-            fontsize=12,
-            handlelength=1.0,
-            borderpad=0.3,
-            handletextpad=0.5,
-            columnspacing=1.2,
-        )
-    return fig
-
-
-def _pull_rows_together(fig, axes, shift_in):
-    """Slide row *r* up by ``r * shift_in`` INCHES after the layout has settled (negative moves
-    it down). The rows-axis twin of :func:`stats_lib._pull_columns_together`; the space this
-    frees at the bottom is cropped by ``bbox_inches='tight'`` at save time."""
-    if not shift_in:
-        return
-    if fig.get_layout_engine() is not None:
-        fig.canvas.draw()  # let constrained layout finish before overriding it
-        fig.set_layout_engine("none")
-    dy = float(shift_in) / fig.get_size_inches()[1]
-    for ri, row in enumerate(axes):
-        for ax in row:
-            pos = ax.get_position()
-            ax.set_position([pos.x0, pos.y0 + ri * dy, pos.width, pos.height])
-
-
 def plot_tail_with_count_insets(
     units,
     figsize=(6.4, 3.0),
-    models=MODELS,
     tail_kw=None,
     inset_bounds=(0.06, 0.48, 0.30, 0.36),
     inset_headroom=1.35,
     inset_title="# Units",
     inset_title_pad=2.0,
     n_xy=(0.66, 0.05),
-    title_fontsize=14,
     title_pad=30,
     legend_dy_in=0.03,
-    wspace=None,
-    w_pad=None,
-    column_shift_in=0.0,
     legend_lw=None,
-    panel_fn=None,
-    sharey=True,
 ):
     """One row, one column per subject: :func:`plot_tail_fractions`, with the decisive-neuron
-    counts of :func:`plot_model_comparison`'s bar row drawn as an inset in each panel.
+    counts (``call`` among the ``decisive`` neurons, from :func:`add_decisive`) drawn as an
+    inset in each panel.
 
     ``inset_bounds`` is the inset's ``[x0, y0, width, height]`` in the parent's AXES FRACTIONS;
     the curves all start at 1/3 and only the relational one climbs, so the top left is empty.
@@ -974,40 +630,27 @@ def plot_tail_with_count_insets(
     ``n_xy`` is where ``N = ...`` sits (bottom centre of the text), in AXES FRACTIONS; it counts
     every neuron, the inset only the decisive ones. A **list** of such positions is tried in
     order, per panel, and the first where the text touches no curve, band or inset is used
-    (:func:`_place_clear`); if none is clear, the one touching least. ``legend_lw`` sets the line width of the
-    legend's markers (points); ``None`` keeps the curves' own width. ``panel_fn(ax, g, models)``
-    draws each panel in place of :func:`plot_tail_fractions` (``g`` is that subject's units;
-    it must label its lines with the model names, which the legend is built from). ``sharey``
-    ties the panels' y axes; turn it off for quantities whose scale differs by subject (counts).
+    (:func:`_place_clear`); if none is clear, the one touching least. ``legend_lw`` sets the
+    line width of the legend's markers (points); ``None`` keeps the curves' own width.
     """
     from matplotlib import pyplot as plt
 
     subjects = sl.ordered_subjects(units)
-    models = list(models)
+    models = list(MODELS)
     tail_kw = dict(tail_kw or {})
     fig, axes = plt.subplots(
         1,
         len(subjects),
         figsize=figsize,
         squeeze=False,
-        sharey=sharey,
+        sharey=True,
         layout="constrained",
     )
-    eng = {
-        k: v
-        for k, v in (("wspace", wspace), ("w_pad", w_pad))
-        if v is not None
-    }
-    if eng:
-        fig.get_layout_engine().set(**eng)
     n_texts = []
     for ci, s in enumerate(subjects):
         g = units[units["subject"] == s]
         ax = axes[0][ci]
-        if panel_fn is None:
-            plot_tail_fractions(ax, g, models=models, show_n=False, **tail_kw)
-        else:
-            panel_fn(ax, g, models)
+        plot_tail_fractions(ax, g, **tail_kw)
         cands = (
             [tuple(n_xy)] if np.ndim(n_xy) == 1 else [tuple(c) for c in n_xy]
         )
@@ -1025,9 +668,7 @@ def plot_tail_with_count_insets(
                 cands,
             )
         )
-        ax.set_title(
-            sl.subject_title(s), fontsize=title_fontsize, pad=title_pad
-        )
+        ax.set_title(sl.subject_title(s), fontsize=14, pad=title_pad)
         if ci:
             ax.set_ylabel("")
 
@@ -1062,7 +703,6 @@ def plot_tail_with_count_insets(
         # `y=1.0` pins the title to the inset's top edge. Left unset, matplotlib auto-places a
         # title above everything in the axes, which silently overrides a negative pad.
         ins.set_title(inset_title, fontsize=12, pad=inset_title_pad, y=1.0)
-    sl._pull_columns_together(fig, axes, column_shift_in)
 
     fig.canvas.draw()  # legend and N go in once the layout has settled
     for ax, txt, cands in n_texts:
@@ -1091,9 +731,9 @@ def plot_tail_with_count_insets(
     return fig
 
 
-def _place_clear(fig, ax, txt, candidates, pad_px=3.0):
+def _place_clear(fig, ax, txt, candidates):
     """Move ``txt`` (in ``ax``'s AXES FRACTIONS) to the first of ``candidates`` where its box,
-    grown by ``pad_px``, crosses no line, filled band or inset of ``ax``; failing that, to the
+    grown by 3 pixels, crosses no line, filled band or inset of ``ax``; failing that, to the
     candidate crossing fewest. Run after the layout has settled, since it works in pixels.
     """
     from matplotlib.path import Path
@@ -1117,7 +757,7 @@ def _place_clear(fig, ax, txt, candidates, pad_px=3.0):
 
     def hits(pos):
         txt.set_position(pos)
-        bb = txt.get_window_extent(r).expanded(1.0, 1.0).padded(pad_px)
+        bb = txt.get_window_extent(r).expanded(1.0, 1.0).padded(3.0)
         n = sum(p.intersects_bbox(bb, filled=f) for p, f in obstacles)
         return n + 10 * sum(bb.overlaps(ib) for ib in insets)
 
@@ -1144,17 +784,11 @@ def tail_fractions(acc, grid, min_tail=10):
 def plot_tail_fractions(
     ax,
     g,
-    models=MODELS,
     min_tail=10,
     n_boot=1000,
     n_grid=200,
     seed=0,
     sem_alpha=0.25,
-    lw=1.2,
-    n_xy=(0.03, 0.97),
-    show_n=True,
-    xlabel="Held-out accuracy ≥ x",
-    ylabel="Fraction of units",
 ):
     """Of all (neuron, model) scores at or above each threshold, the fraction per model.
 
@@ -1165,7 +799,7 @@ def plot_tail_fractions(
     """
     import warnings
 
-    acc = g[[f"{m}_acc" for m in models]].to_numpy(float)
+    acc = g[[f"{m}_acc" for m in MODELS]].to_numpy(float)
     grid = np.linspace(acc.min(), acc.max(), n_grid)
     frac = tail_fractions(acc, grid, min_tail)
     rng = np.random.default_rng(seed)
@@ -1180,7 +814,7 @@ def plot_tail_fractions(
     with warnings.catch_warnings():  # thresholds where <2 resamples still have a curve
         warnings.simplefilter("ignore", RuntimeWarning)
         sem = np.nanstd(boot, axis=0, ddof=1)
-    for i, m in enumerate(models):
+    for i, m in enumerate(MODELS):
         ax.fill_between(
             grid,
             frac[i] - sem[i],
@@ -1189,18 +823,9 @@ def plot_tail_fractions(
             alpha=sem_alpha,
             lw=0,
         )
-        ax.plot(grid, frac[i], color=sl.MODEL_COLORS[m], lw=lw, label=m)
-    if show_n:
-        ax.text(
-            *n_xy,
-            f"N = {len(g)}",
-            transform=ax.transAxes,
-            ha="left",
-            va="top",
-            fontsize=12,
-        )
-    ax.set_xlabel(xlabel)
-    ax.set_ylabel(ylabel)
+        ax.plot(grid, frac[i], color=sl.MODEL_COLORS[m], lw=1.2, label=m)
+    ax.set_xlabel("Held-out accuracy ≥ x")
+    ax.set_ylabel("Fraction of units")
     ax.set_ylim(0, 1)
     sl._despine(ax)
     return ax

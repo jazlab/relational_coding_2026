@@ -8,7 +8,7 @@ trials by maximum Poisson likelihood (`figure_4/fit_lib`). ``bias = 0`` is the r
 
 This module adds the **profile** of that fit over ``bias``: at each value on a grid, ``bias`` is
 held fixed and the other four parameters are refit, with the same multi-start optimiser
-(`fit_lib._fit`, ``n_theta_starts`` rotations of ``theta``) and the same bounds as the cached fit.
+(`fit_lib._fit`, ``fit_lib.N_THETA_STARTS`` rotations of ``theta``) and the same bounds as the cached fit.
 Plotted against ``bias``, the profile's peak is where the free fit lands, so the curve shows how
 sharply the data pin relationality down rather than only where.
 
@@ -22,7 +22,8 @@ copied: the example neurons are read from `figure_example_neurons.ipynb`'s own `
 fit is the cached all-trial fit (`ring_lib.unit_fits`).
 
 Profiles are cached per neuron in ``cache/figures/supp_figure_5/profiles/``, one row per
-``bias`` value, so a finer grid computes only the values not already there.
+``bias`` value (``bias``, ``dll`` and the fit configuration's ``cfg_tag``), so a finer grid
+computes only the values not already there.
 """
 
 import os
@@ -46,7 +47,11 @@ import ring_lib as rl  # noqa: E402
 
 MODEL = "relational_bias"
 EXAMPLES_NOTEBOOK = FIGURE_4 / "figure_example_neurons.ipynb"
-CACHE_DIR = _ROOT / "cache" / "figures" / "supp_figure_5" / "profiles"
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+import paths  # noqa: E402
+
+CACHE_DIR = paths.FIGURES_CACHE / "supp_figure_5" / "profiles"
 
 
 def example_units():
@@ -78,41 +83,40 @@ def constant_ll(unit):
     )
 
 
-def free_fit(subject, session, unit_id, cfg=None):
+def free_fit(subject, session, unit_id):
     """The cached all-trial fit with every parameter free, and its ΔLL (nats/trial).
     Returns ``(params, dll)``."""
-    cfg = cfg or fl.FitConfig()
-    p = rl.unit_fits(subject, session, unit_id, cfg, verbose=False)[MODEL]
+    p = rl.unit_fits(subject, session, unit_id, fl.FitConfig(), verbose=False)[
+        MODEL
+    ]
     unit = unit_trials(subject, session, unit_id)
     ll = -fl._neg_ll([], _model(), (), p, _d2(unit))
     return p, (ll - constant_ll(unit)) / len(unit["fr2"])
 
 
-def _fit_fixed_bias(model, unit, bias, cfg):
+def _fit_fixed_bias(model, unit, bias):
     """The other four parameters refit with ``bias`` held fixed — `fit_all_trials`' multi-start,
     minus ``bias`` from the free set (and so minus its three ``bias`` starting values).
     """
     stats = ml.unit_init_stats(unit)
-    p0 = fl._apply_width_policy(
-        {**model.init_params(stats), "bias": float(bias)}, cfg
-    )
-    free = tuple(n for n in model.free_params(cfg.fixed_width) if n != "bias")
+    p0 = {**model.init_params(stats), "bias": float(bias)}
+    free = tuple(n for n in model.free_params() if n != "bias")
     starts = [
-        {**p0, "theta": p0["theta"] + 2 * np.pi * k / cfg.n_theta_starts}
-        for k in range(cfg.n_theta_starts)
+        {**p0, "theta": p0["theta"] + 2 * np.pi * k / fl.N_THETA_STARTS}
+        for k in range(fl.N_THETA_STARTS)
     ]
-    return fl._fit(model, free, p0, _d2(unit), starts, cfg)
+    return fl._fit(model, free, p0, _d2(unit), starts)
 
 
-def profile(subject, session, unit_id, bias_grid, cfg=None, verbose=True):
+def profile(subject, session, unit_id, bias_grid):
     """ΔLL (nats/trial) at each ``bias`` in ``bias_grid``, as a DataFrame sorted by ``bias``.
 
     Cached per neuron, one row per ``bias``; only grid values not already cached are fit.
     """
-    cfg = cfg or fl.FitConfig()
+    tag = fl.FitConfig().tag
     path = CACHE_DIR / f"{subject}_{session}_{unit_id}.csv"
     old = pd.read_csv(path) if path.exists() else pd.DataFrame()
-    if len(old) and old["cfg_tag"].iloc[0] != cfg.tag:
+    if len(old) and old["cfg_tag"].iloc[0] != tag:
         old = pd.DataFrame()  # a different estimator: start over
     grid = np.round(np.asarray(bias_grid, float), 6)
     have = set(np.round(old["bias"], 6)) if len(old) else set()
@@ -122,27 +126,17 @@ def profile(subject, session, unit_id, bias_grid, cfg=None, verbose=True):
         ll0, n = constant_ll(unit), len(unit["fr2"])
         rows = []
         for b in todo:
-            p, ll = _fit_fixed_bias(model, unit, b, cfg)
-            rows.append(
-                dict(
-                    bias=b,
-                    ll=ll,
-                    ll_constant=ll0,
-                    n_2obj=n,
-                    dll=(ll - ll0) / n,
-                    **{f"p_{k}": v for k, v in p.items() if k != "bias"},
-                )
-            )
-        new = pd.DataFrame(rows).assign(cfg_tag=cfg.tag)
+            _, ll = _fit_fixed_bias(model, unit, b)
+            rows.append(dict(bias=b, dll=(ll - ll0) / n))
+        new = pd.DataFrame(rows).assign(cfg_tag=tag)
         df = pd.concat([old, new], ignore_index=True) if len(old) else new
         CACHE_DIR.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(".tmp")
         df.to_csv(tmp, index=False)
         os.replace(tmp, path)  # atomic
-        if verbose:
-            print(
-                f"  {subject} {session} unit {unit_id}: fit {len(todo)} new bias values"
-            )
+        print(
+            f"  {subject} {session} unit {unit_id}: fit {len(todo)} new bias values"
+        )
     else:
         df = old
     keep = np.isin(np.round(df["bias"], 6), grid)

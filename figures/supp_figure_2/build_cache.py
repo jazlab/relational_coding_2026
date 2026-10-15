@@ -3,23 +3,21 @@
     python build_cache.py                              # everything, both phases, 8 workers
     python build_cache.py --phases delay               # one phase
     python build_cache.py --stage fits                 # one stage
-    python build_cache.py --sessions 2 --stride 11     # smoke test: two sessions, both monkeys
+    python build_cache.py --sessions 2 --stride 12     # smoke test: two sessions, both monkeys
 
-Four stages, run in this order, each **resumable** — stop it at any point and re-run the same
+Three stages, run in this order, each **resumable** — stop it at any point and re-run the same
 command, and it skips what is already on disk:
 
   comparison  figure 3's sign-only model comparison  (`run_comparison_cache.build_session`)
               checkpointed per session; 1000 bootstrap replicates
-  phase       figure 3's 2-object phase fit          (`stats_lib.build_session`)
-              checkpointed per session; 50 bootstraps
   fits        figure 4's model fits                  (`fit_lib.fit_unit`)
               checkpointed **per neuron**
               — a large session is most of an hour of fitting, too much to lose
   recovery    figure 4's KS synthetic distributions  (`ks_lib._unit_job`)
               5 replicates, checkpointed per neuron
 
-Every stage fits only the neurons passing the shared criterion — the 1339 the figures draw,
-not the 3186 the main caches hold.
+Every stage fits only the neurons passing the shared criterion — the 1339 the figures draw —
+as the main caches do.
 
 Everything lands under ``cache/figures/supp_figure_2/{phase}/``; nothing in the main
 figures' caches is read as a fit or written. The firing rates are the main figures' own — both
@@ -31,7 +29,7 @@ default 2-s window. Every library call that would fan out is therefore made with
 inside a worker that has called `use_phase` first. Each stage checks that its workers actually
 saw the phase before trusting what they return.
 
-Never every core: ``--n-jobs`` defaults to 8 of this machine's 14 and refuses more than 10.
+``--n-jobs`` defaults to 8; `figures/build_caches.py` passes its own (12).
 """
 
 import argparse
@@ -59,25 +57,18 @@ import common  # noqa: E402  (sets sys.path for everything below)
 sys.path.remove(_HERE)
 sys.path.insert(0, _HERE)
 
-import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 from joblib import Parallel, delayed  # noqa: E402
 
 N_REPS, SIM_SEED = 5, 0  # must match figure_ks_stats.ipynb
 
 
-def _write_atomic(df, path):
+def _write_atomic(obj, path):
+    """Pickle ``obj`` to ``path`` via a temporary file."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
-    if path.suffix == ".pkl":
-        pd.to_pickle(df, tmp)
-    else:
-        df.to_csv(
-            tmp,
-            index=False,
-            compression="gzip" if path.name.endswith(".gz") else None,
-        )
+    pd.to_pickle(obj, tmp)
     os.replace(tmp, path)
 
 
@@ -109,59 +100,23 @@ def _run(jobs, n_jobs):
     return Parallel(n_jobs=n_jobs, verbose=5)(jobs)
 
 
-def _only_passing(keep):
-    """Restrict figure 3's per-session loader, in this process, to ``keep``.
-
-    `run_comparison_cache.build_session` and `stats_lib.build_session` fit every unit the
-    loader returns, which is all 3186; only the 1339 passing the shared criterion are ever
-    drawn. Both look the loader up as `stats_lib.session_unit_trials` at call time, so
-    wrapping it there is enough. Each unit's fit is seeded from its own id, so dropping the
-    others changes nothing about the units that are kept.
-    """
-    import stats_lib as sl
-
-    load = getattr(
-        sl.session_unit_trials, "__wrapped__", sl.session_unit_trials
-    )
-
-    def session_unit_trials(subject, session, *a, **k):
-        units = load(subject, session, *a, **k)
-        return {
-            u: d for u, d in units.items() if (subject, session, u) in keep
-        }
-
-    session_unit_trials.__wrapped__ = load
-    sl.session_unit_trials = session_unit_trials
-
-
 # ── Figure 3: the sign-only model comparison ──────────────────────────────────
 def _comparison_cfg(phase):
-    import pairs_lib as pairs
-
-    p = common.paths(phase)
-    n = common.COMPARISON_N_BOOT
+    """`run_comparison_cache.build_session`'s keyword arguments for this phase."""
+    p = common.phase_paths(phase)
     return dict(
-        sigma_deg=pairs.SIGMA_DEG,
-        n_folds=5,
-        n_boot=n,
-        boot_lo=0,
-        boot_hi=n,
-        max_comparisons=0,
-        sep_max_comparisons=0,
-        seed=0,
-        tag="uncapped",
         parts_dir=str(p["comparison_parts"]),
         boot_dir=str(p["comparison_boot"]),
+        n_boot=common.COMPARISON_N_BOOT,
     )
 
 
-def _comparison_session(phase, subject, session, cfg, keep):
+def _comparison_session(phase, subject, session, cfg):
     common.use_phase(phase)
-    _only_passing(keep)
     import run_comparison_cache as rcc
 
     return (
-        rcc.build_session(subject, session, cfg, verbose=False),
+        rcc.build_session(subject, session, **cfg, verbose=False),
         _phase_state(),
     )
 
@@ -172,11 +127,10 @@ def stage_comparison(phase, sessions, n_jobs):
 
     p = common.use_phase(phase)
     cfg = _comparison_cfg(phase)
-    keep = _passing()
     t0 = time.time()
     out = _run(
         [
-            delayed(_comparison_session)(phase, s, ss, cfg, keep)
+            delayed(_comparison_session)(phase, s, ss, cfg)
             for s, ss in sessions
         ],
         n_jobs,
@@ -204,72 +158,6 @@ def stage_comparison(phase, sessions, n_jobs):
         f'  wrote {p["comparison_units"]} ({len(df)} neurons); argmax '
         f'{df["best_model"].value_counts().to_dict()}'
     )
-
-
-# ── Figure 3: the 2-object phase fit ──────────────────────────────────────────
-def _phase_cfg():
-    import pairs_lib as pairs
-
-    cfg = dict(
-        sigma_deg=pairs.SIGMA_DEG,
-        n_folds=5,
-        n_boot=pairs.N_BOOT,
-        max_comparisons=pairs.MAX_COMPARISONS,
-        seed=0,
-        with_proximity=True,
-        sep_max_comparisons=pairs.SEP_MAX_COMPARISONS,
-    )
-    # The tag `run_phase_cache.py` writes, so the checkpoints say what built them.
-    cfg["tag"] = (
-        f"v1_ordinal_s{cfg['sigma_deg']:g}_k{cfg['n_folds']}_b{cfg['n_boot']}"
-        f"_m{cfg['max_comparisons']}_seed{cfg['seed']}"
-        f"_prox{cfg['sep_max_comparisons']}"
-    )
-    return cfg
-
-
-def _phase_session(phase, subject, session, cfg, parts_dir, keep):
-    common.use_phase(phase)
-    _only_passing(keep)
-    import stats_lib as sl
-
-    return (
-        sl.build_session(
-            subject, session, cfg, parts_dir=parts_dir, verbose=False
-        ),
-        _phase_state(),
-    )
-
-
-def stage_phase(phase, sessions, n_jobs):
-    import stats_lib as sl
-
-    p = common.use_phase(phase)
-    cfg = _phase_cfg()
-    parts = p["phase_parts"] / cfg["tag"]
-    keep = _passing()
-    t0 = time.time()
-    out = _run(
-        [
-            delayed(_phase_session)(phase, s, ss, cfg, parts, keep)
-            for s, ss in sessions
-        ],
-        n_jobs,
-    )
-    for (name, n, secs), state in out:
-        _expect(phase, state, "phase")
-        if secs:
-            print(f"  {name}: {n} neurons ({secs:.0f} s)", flush=True)
-    print(f"  {(time.time() - t0) / 60:.1f} min", flush=True)
-
-    have = {f.name[: -len("_units.csv")] for f in parts.glob("*_units.csv")}
-    missing = [s for s in sl.fr_sessions() if f"{s[0]}_{s[1]}" not in have]
-    if missing:
-        print(f"  {len(missing)} sessions still to fit — not combining yet")
-        return
-    sl.combine_parts(
-        cfg, parts_dir=parts
-    )  # to sl.UNITS_PATH, set by use_phase
 
 
 # ── Figure 4: the model fits ──────────────────────────────────────────────────
@@ -364,7 +252,7 @@ def _recover_neuron(phase, rows, trials, models, cfg, reps, out_path):
     return _phase_state()
 
 
-def stage_recovery(phase, sessions, n_jobs, n_reps=N_REPS):
+def stage_recovery(phase, sessions, n_jobs):
     import data_lib as dl
     import fit_lib as fl
     import ks_lib as ks
@@ -376,7 +264,7 @@ def stage_recovery(phase, sessions, n_jobs, n_reps=N_REPS):
     summary = common.selected_fits(phase, models, verbose=False)
     cfg = fl.FitConfig()
     parts = p["bias_parts"] / f"seed{SIM_SEED}"
-    reps = list(range(n_reps))
+    reps = list(range(N_REPS))
     wanted = {(s, ss) for s, ss in sessions}
 
     jobs, by_session = [], {}
@@ -401,7 +289,7 @@ def stage_recovery(phase, sessions, n_jobs, n_reps=N_REPS):
     n_all = sum(len(v) for v in by_session.values())
     print(
         f"  {len(jobs)} of {n_all} neurons to simulate x {len(models)} models x "
-        f"{n_reps} replicates",
+        f"{N_REPS} replicates",
         flush=True,
     )
     t0 = time.time()
@@ -411,7 +299,7 @@ def stage_recovery(phase, sessions, n_jobs, n_reps=N_REPS):
         print(f"  {(time.time() - t0) / 60:.1f} min", flush=True)
 
     # Write the per-session files `ks_lib.synthetic_biases` reads, in its own format.
-    run_dir = ks._run_dir(cfg, SIM_SEED, tag="bias")
+    run_dir = ks._run_dir(SIM_SEED)
     for (subject, session), files in by_session.items():
         if not all(f.exists() for f in files):
             continue
@@ -430,12 +318,9 @@ def stage_recovery(phase, sessions, n_jobs, n_reps=N_REPS):
             summary,
             models,
             cfg,
-            n_reps=n_reps,
+            n_reps=N_REPS,
             seed=SIM_SEED,
             n_jobs=1,
-            cache=True,
-            resume=True,
-            min_dll=None,
             verbose=True,
         )
         print(f"  {len(synth)} synthetic rows in {run_dir}")
@@ -443,7 +328,6 @@ def stage_recovery(phase, sessions, n_jobs, n_reps=N_REPS):
 
 STAGES = dict(
     comparison=stage_comparison,
-    phase=stage_phase,
     fits=stage_fits,
     recovery=stage_recovery,
 )
@@ -475,10 +359,8 @@ def main():
     )
     ap.add_argument("--n-jobs", type=int, default=8)
     args = ap.parse_args()
-    if not 1 <= args.n_jobs <= 10:
-        raise SystemExit(
-            "--n-jobs must be between 1 and 10: leave the machine usable"
-        )
+    if args.n_jobs < 1:
+        raise SystemExit("--n-jobs must be at least 1")
 
     import stats_lib as sl
 

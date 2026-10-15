@@ -21,7 +21,7 @@ for the transform.
 Why the estimator is held fixed
 -------------------------------
 Real and synthetic values both come from :func:`fit_lib.fit_all_trials` — the same
-multi-start, the same bounds, the same width policy. That is not a detail: ``bias`` is bounded
+multi-start, the same bounds. That is not a detail: ``bias`` is bounded
 to [0, 1] and its estimator is biased near those bounds, so the distribution of ``bias`` is as
 much a property of the estimator as of the neurons. Comparing distributions across a change of
 estimator would measure the estimator.
@@ -42,7 +42,7 @@ P_BIAS = "p_bias"
 UNIT_KEYS = ["subject", "session", "unit"]
 
 
-def biases(summary, model=MODEL, verbose=True):
+def biases(summary, verbose=True):
     """One row per neuron with a ``bias`` column — the schema every table and figure in this
     directory reads.
 
@@ -50,15 +50,14 @@ def biases(summary, model=MODEL, verbose=True):
     anything itself. A neuron whose row is missing the parameter (the model was never fit for
     it) is dropped and counted.
     """
+    model = MODEL
     sub = summary[summary["model"] == model]
     if len(sub) == 0:
         raise KeyError(
             f"no '{model}' rows in the summary, so there is nothing to measure. The metric's "
             f"model is the measuring instrument, not one of the models under test, so a "
             f"notebook whose model list holds only the models it compares will have had these "
-            f"rows dropped by `common.selected_fits`. Pass `MODELS + ('{model}',)` to it. "
-            f"(Returning an empty frame here used to let the figure draw and save with no "
-            f"data curve at all.)"
+            f"rows dropped by `common.selected_fits`. Pass `MODELS + ('{model}',)` to it."
         )
     if P_BIAS not in sub.columns:
         raise KeyError(
@@ -75,24 +74,20 @@ def biases(summary, model=MODEL, verbose=True):
     if over.any():
         raise ValueError(
             f"{int(over.sum())} of {len(out)} neurons have bias > 1 (max "
-            f'{out["bias"].max():.3f}). Those fits predate the identifiability bound and are '
-            f"not comparable with current ones — see models_lib.BIAS_MAX. Refit."
+            f'{out["bias"].max():.3f}), outside the identifiable range [0, 1] — see '
+            f"models_lib.BIAS_MAX. Refit."
         )
     if verbose:
         print(f"{len(out)} of {n} neurons have a fitted bias")
     return out
 
 
-def unit_bias(unit, cfg=None, model=None):
-    """Fit the model to **one** neuron's trials and return its ``bias``.
+def unit_bias(unit, cfg, model):
+    """Fit the relational-bias ``model`` to **one** neuron's trials and return its ``bias``.
 
-    Used for the demo notebook and for anything that needs the metric on trials that are not
-    in the cache — synthetic ones, say. Goes through :func:`fit_lib.fit_all_trials` so the
-    estimator is identical to the one the cached values came from.
+    For trials that are not in the cache — synthetic ones (``ks_lib``). Goes through
+    :func:`fit_lib.fit_all_trials` so the estimator is identical to the one the cached values
+    came from.
     """
-    import models_lib as ml
-
-    cfg = cfg or fl.FitConfig(models=(MODEL, "constant"))
-    model = model or ml.build_models([MODEL])[MODEL]
     fit = fl.fit_all_trials(unit, cfg, {MODEL: model})[MODEL]
     return float(fit["bias"])

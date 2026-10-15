@@ -17,10 +17,13 @@ data — one λ grid serves both animals, and **λ(0.5) = 0 exactly**. x = 0.5 *
 population, which is what makes "could the animal decode better by shifting its mix?" a test
 against a landmark fixed by construction rather than estimated.
 
+The pool is every neuron passing the shared modulation criterion of `figures/config.py` whose
+retinotopic and relational models both beat chance out of sample (`min_fit=0.0`): 1239 neurons.
+
 Decoder: bump read-out, hidden [64, 64], 500 Poisson inputs, 36 rotation replicas, 100 repeats
 per sweep point. K — distinct units per sweep point — is 186 (Monkey P) / 62 (Monkey E), the
 smallest wedge over the whole sweep, and is **derived, not chosen**: every point is drawn at that
-size or skipped, so no two points on a curve differ in neuron count.
+size, so no two points on a curve differ in neuron count.
 
 ## Result
 
@@ -40,38 +43,33 @@ by testing every sweep point against x = 0.5 (Welch, Holm-corrected within anima
 the claim, and it is the one the notebook prints. Every number above comes out of a cell in
 `titration.ipynb`.
 
-Removed on 2026-09-13, recoverable from git: a shuffled-ρ null battery (40 shuffle CSVs and the
-three functions that read them), a bootstrap argmin-CI / curvature report, five alternative
-optimality tests, and two alternative figures. None was reachable from the notebook — together
-they were half of `titration_lib.py`. The statistics they produced (the argmin confidence
-intervals, the *p* for the minimum sitting at the unbiased point, and the null's *z*) are
-therefore **no longer reported anywhere in this directory**, and have been dropped from this file
-rather than quoted from memory. Restore the code from git before citing any of them again.
-
 ## Files
 
     titration.ipynb     the result: the curve, and the test against the unbiased population
     titration.pdf       the figure it writes
     titration_lib.py    the λ solver, the curve statistics, the figure, the caching
-    regenerate.py       refits dataframes/ from scratch, 12 workers in parallel
+    regenerate.py       refits the titration from scratch (also run by figures/build_caches.py)
     run_titration.py    the sweep driver that regenerate.py calls
     pool_lib.py  decoder_lib.py            the pool, the response tables, the read-out
-    dataframes/         the fit: results_k20_b100.csv
-    cache/              derived quantities only; safe to delete
+
+Caches, under `cache/figures/figure_3/efficient_coding/` at the repository root:
+
+    dataframes/         the fit: results.csv, written by regenerate.py
+    derived/            derived quantities only, built by the notebook; safe to delete
 
 ## Re-running
 
 The notebook never refits. Its own expensive steps — the neuron pool and the curve's realized-x
-table — are cached in `cache/`, so **changing `INSET_SEED` redraws the example insets and touches
+table — are cached in `derived/`, so **changing `INSET_SEED` redraws the example insets and touches
 nothing else**. `titration_lib.clear_cache()` drops the derived files and leaves the fit alone.
 
-To refit from scratch (~20 min on 12 cores):
+To refit from scratch (~25 min with the default 10 workers):
 
     python regenerate.py              # --jobs N, --dry-run
 
 Response tables are cached under `cache/figures/figure_3/pool_tables/`, so only the first run
 pays the 127 ms/unit to build them. The fit is deterministic in its seeds: re-running reproduces
-`results_k20_b100.csv` value for value.
+`results.csv` value for value.
 
 ## What this does not establish
 
@@ -79,14 +77,9 @@ pays the 127 ms/unit to build them. The fit is deterministic in its seeds: re-ru
 * independent Poisson noise, and the task's own stimulus distribution;
 * capacity is probed only downward — the decoder sits ~3× above the Cramér–Rao bound, so part of
   a difference between compositions could be learnability rather than information;
-* the ρ coordinate has a forking-path history: the convex result appeared only after the
-  coordinate was switched from probability to the fit-strength angle, and the axis was rebuilt
-  again on 2026-09-13 when the graded model comparison was retired in favour of the sign-only
-  one (the verdict was unchanged by that rebuild, which is the reassuring direction);
-* the tilt still confounds mean composition with ρ-*spread*, though far more weakly than the
-  rank-wedge family it replaced; only a two-parameter tilt would remove it;
-* this run varies the *sampling family*, not the objective. The evidence that the result also
-  survives a change of objective was produced by the wedge battery, whose code and figures were
-  deleted; it is recoverable from git history (commits `a5e9597` and earlier);
-* **the curve is no longer tested against a shuffled-ρ null** — that battery went with the rest
-  of the unreachable code. What stands is the verdict above.
+* the ρ coordinate was chosen among several candidate coordinates (a forking path), and the
+  convex result depends on using the fit-strength angle rather than the model probability;
+* the tilt still confounds mean composition with ρ-*spread*, though more weakly than a hard rank
+  wedge would; only a two-parameter tilt would remove it;
+* only the *sampling family* is fixed here; the read-out's objective is not varied;
+* the curve is not tested against a shuffled-ρ null. What stands is the verdict above.

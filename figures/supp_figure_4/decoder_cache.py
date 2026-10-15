@@ -1,28 +1,29 @@
 r"""Figure 3's motor decoder, fit once and cached to disk.
 
-`figure_3/motor_decoding/decoder_v2.ipynb` memoises its decoders **in the kernel only**
+`figure_3/motor_decoding/decoder.ipynb` memoises its decoders **in the kernel only**
 (``_DECODERS``), so every fresh kernel refits all ``len(SUBJECTS) × N_BOOTSTRAPS`` of them. This
-module fits the *same* decoders and writes each to ``cache/figures/supp_figure_4/decoders/`` so nothing here ever
-refits one.
+module fits the *same* decoders and writes each to ``cache/figures/supp_figure_4/decoders/``, so
+nothing here refits one twice.
 
-Nothing about the decoder is re-implemented:
+Nothing about the decoder is changed:
 
-* **The hyperparameters** are read from `decoder_v2.ipynb`'s own CONFIG cell at call time
+* **The hyperparameters** are read from `decoder.ipynb`'s own CONFIG cell at call time
   (:func:`decoder_config`), so an edit there reaches this directory and changes the cache key,
   instead of the two silently drifting apart.
-* **The fit** is `decoder_v2`'s ``build_decoder``, line for line, calling the same
-  `population_v2` / `population_lib` / `decoder_lib` functions, which are imported from
+* **The fit** repeats `decoder`'s ``build_decoder`` step for step (:func:`_fit`), calling the
+  same `population_lib` / `decoder_lib` functions, which are imported from
   `figure_3/motor_decoding/` and not copied.
 
 What is cached is what the fit *produces* and nothing that can be cheaply recomputed: the
 drawn neurons (subject/session/unit_id, in draw order, with repeats), the joint fit's
-amplitudes and phases, the 1-object cosine phases it started from, and the fit report. The
-decode matrix ``W`` (180 × 12,800 floats, ~18 MB per decoder) is rebuilt from those in
-milliseconds by :func:`load_decoder`, and the neurons' trials are re-read from the shared
-firing-rate cache.
+amplitudes and phases, and the fit report. The decode matrix ``W`` (180 × 12,800 floats,
+~18 MB per decoder) is rebuilt from those in milliseconds by :func:`load_decoder`, and the
+neurons' trials are re-read from the shared firing-rate cache.
 
-A cache file is keyed by a hash of every hyperparameter the fit depends on, plus the drawn
-neurons, so a changed CONFIG or a changed population makes it stale rather than wrong.
+A cache file is keyed by a hash of the subject, the bootstrap index and every hyperparameter the
+fit depends on (:data:`FIT_KEYS`), so a changed CONFIG makes it stale rather than wrong. A change
+to the neuron pool itself (the modulation or comparison caches) is not part of the key: delete
+the cache after rebuilding those.
 """
 
 import hashlib
@@ -38,22 +39,25 @@ _HERE = Path(__file__).resolve().parent
 _FIGURES = _HERE.parent
 _ROOT = _FIGURES.parent
 MOTOR_DIR = _FIGURES / "figure_3" / "motor_decoding"
-DECODER_NB = MOTOR_DIR / "decoder_v2.ipynb"
+DECODER_NB = MOTOR_DIR / "decoder.ipynb"
 for _p in (str(MOTOR_DIR), str(_FIGURES / "figure_3"), str(_FIGURES)):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-import population_v2 as pv  # noqa: E402  figure 3's v2 pool; re-exports pl, dl
-
-pl, dl = pv.pl, pv.dl
+import decoder_lib as dl  # noqa: E402
+import population_lib as pl  # noqa: E402
 
 #: In the paper-wide cache, beside every other figure's, not in this directory.
-CACHE_ROOT = _ROOT / "cache" / "figures" / "supp_figure_4"
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+import paths  # noqa: E402
+
+CACHE_ROOT = paths.FIGURES_CACHE / "supp_figure_4"
 CACHE_DIR = CACHE_ROOT / "decoders"
 
 SUBJECT_TITLE = {"Perle": "Monkey P", "Elgar": "Monkey E"}
 
-#: The CONFIG names the fit depends on — `decoder_v2`'s ``_hyperparameters()``, by name.
+#: The CONFIG names the fit depends on — `decoder`'s ``_hyperparameters()``, by name.
 FIT_KEYS = (
     "NUM_NEURONS",
     "SEED",
@@ -62,15 +66,13 @@ FIT_KEYS = (
     "LOBE_WIDTH_DEG",
     "FIT_N_SAMPLES",
     "FIT_K_MAX",
-    "FIT_PHASES",
     "FIT_ITERS",
-    "EXCLUSION",
 )
 
 
-# ── The hyperparameters, from decoder_v2.ipynb itself ─────────────────────────
+# ── The hyperparameters, from decoder.ipynb itself ────────────────────────────
 def decoder_config():
-    """`decoder_v2.ipynb`'s CONFIG cell, executed, as a dict of its upper-case names.
+    """`decoder.ipynb`'s CONFIG cell, executed, as a dict of its upper-case names.
 
     The cell is plain assignments, so executing it is exactly what the notebook does. Read
     on every call — nothing is frozen at import — so an edit to that notebook is picked up.
@@ -109,17 +111,15 @@ def _path(subject, boot):
     return CACHE_DIR / f"{subject}_boot{int(boot)}.npz"
 
 
-# ── The fit: decoder_v2's build_decoder ───────────────────────────────────────
+# ── The fit: decoder's build_decoder ──────────────────────────────────────────
 _POOLS = {}
 _SESSIONS = {}
 
 
-def _pool(subject, exclusion):
-    if (subject, exclusion) not in _POOLS:
-        _POOLS[(subject, exclusion)] = pv.candidate_units(
-            subject=subject, exclusion=exclusion, verbose=False
-        )
-    return _POOLS[(subject, exclusion)]
+def _pool(subject):
+    if subject not in _POOLS:
+        _POOLS[subject] = pl.candidate_units(subject)
+    return _POOLS[subject]
 
 
 def _sessions_for(units_df):
@@ -137,11 +137,10 @@ def _sessions_for(units_df):
     return _SESSIONS
 
 
-def _fit(subject, boot, cfg, verbose=True):
-    """`decoder_v2.build_decoder`, unchanged except that it returns the fit's parameters
+def _fit(subject, boot, cfg, verbose):
+    """`decoder.build_decoder`, unchanged except that it returns the fit's parameters
     rather than a closure over them."""
-    n_copies = cfg["NUM_REPLICAS"] * 2
-    pool_df = _pool(subject, cfg["EXCLUSION"])
+    pool_df = _pool(subject)
     units_df, counts = pl.sample_units(
         pool_df,
         np.arange(len(pool_df)),
@@ -160,22 +159,16 @@ def _fit(subject, boot, cfg, verbose=True):
         cfg["NUM_REPLICAS"],
         cfg["SAMPLE_SIGMA_DEG"],
         rng,
-        True,
     )
     amps, psi, info = dl.joint_fit(
         R_train,
         theta_train,
         len(units_df),
-        n_copies,
         cfg["NUM_REPLICAS"],
-        True,
-        dl._lobe_weights,
         cfg["LOBE_WIDTH_DEG"],
         psi_init=tune["mu"],
         k_max=cfg["FIT_K_MAX"],
         n_iter=cfg["FIT_ITERS"],
-        fit_phases=cfg["FIT_PHASES"],
-        verbose=False,
     )
 
     dpsi = np.degrees(np.abs((psi - tune["mu"] + np.pi) % (2 * np.pi) - np.pi))
@@ -193,9 +186,6 @@ def _fit(subject, boot, cfg, verbose=True):
         units_df=units_df[["subject", "session", "unit_id"]],
         amps=amps,
         psi=psi,
-        mu_init=tune["mu"],
-        unexplained=np.asarray(info["unexplained"], float),
-        n_pool=len(pool_df),
         report=report,
     )
 
@@ -212,14 +202,10 @@ def _save(path, fit, key):
         unit_id=u["unit_id"].to_numpy(int),
         amps=fit["amps"],
         psi=fit["psi"],
-        mu_init=fit["mu_init"],
-        unexplained=fit["unexplained"],
-        n_pool=fit["n_pool"],
         report=fit["report"],
     )
-    tmp.replace(
-        path
-    )  # atomic: an interrupted fit never leaves a half-written file
+    # atomic: an interrupted fit never leaves a half-written file
+    tmp.replace(path)
 
 
 def _read(path):
@@ -236,9 +222,9 @@ def _read(path):
     return d
 
 
-def ensure_decoder(subject, boot, cfg=None, verbose=True):
-    """Fit and cache one decoder if its cache file is missing or stale; return the fit."""
-    cfg = decoder_config() if cfg is None else cfg
+def ensure_decoder(subject, boot, cfg, verbose):
+    """Fit and cache one decoder if its cache file is missing or stale; return the fit.
+    ``cfg`` is :func:`decoder_config`'s dict."""
     key, path = _key(cfg, subject, boot), _path(subject, boot)
     if path.exists():
         d = _read(path)
@@ -255,33 +241,27 @@ def ensure_decoder(subject, boot, cfg=None, verbose=True):
     return _read(path)
 
 
-def ensure_all(cfg=None, verbose=True):
-    """Every ``(subject, boot)`` decoder `decoder_v2` uses, fitting only what is not cached."""
-    cfg = decoder_config() if cfg is None else cfg
+def ensure_all(cfg):
+    """Every ``(subject, boot)`` decoder `decoder` uses, fitting only what is not cached."""
     for s in cfg["SUBJECTS"]:
         for b in range(cfg["N_BOOTSTRAPS"]):
-            ensure_decoder(s, b, cfg, verbose=verbose)
+            ensure_decoder(s, b, cfg, verbose=True)
 
 
-def load_decoder(subject, boot, cfg=None, verbose=False):
-    """A ready-to-use decoder: the cached fit, the neurons' trials, and the decode matrix.
+def load_decoder(subject, boot, cfg):
+    """A ready-to-use decoder: the cached fit, the neurons' 1-object trials, and the decode
+    matrix.
 
-    Returns a dict with ``units_1obj``, ``units_2obj``, ``W`` and ``decode`` — the same
-    things `decoder_v2.build_decoder` returns, plus the fit's parameters and report.
+    Returns a dict with ``units_1obj``, ``W`` and ``decode`` — the 1-object parts of what
+    `decoder.build_decoder` returns — plus the fit's parameters and report.
     """
-    cfg = decoder_config() if cfg is None else cfg
-    d = ensure_decoder(subject, boot, cfg, verbose=verbose)
+    d = ensure_decoder(subject, boot, cfg, verbose=False)
     n_copies = cfg["NUM_REPLICAS"] * 2
     sessions = _sessions_for(d["units_df"])
     d["units_1obj"] = pl.load_units_1obj_trials(
         d["units_df"], session_cache=sessions
     )
-    d["units_2obj"] = pl.load_units_2obj_trials(
-        d["units_df"], session_cache=sessions
-    )
-    mu_eff = pl.replica_preferred_directions(
-        d["psi"], cfg["NUM_REPLICAS"], True
-    )
+    mu_eff = pl.replica_preferred_directions(d["psi"], cfg["NUM_REPLICAS"])
     W = dl.decoder_weights_from_means(
         mu_eff,
         dl.decode_grid(),
@@ -289,19 +269,15 @@ def load_decoder(subject, boot, cfg=None, verbose=False):
         amplitudes=np.repeat(d["amps"], n_copies),
     )
     d["W"] = W
-    d["decode"] = lambda r, W=W: dl.decode(W, r, rectify=False)
+    d["decode"] = lambda r, W=W: dl.decode(W, r)
     return d
 
 
 # ── 1-object read-out ─────────────────────────────────────────────────────────
 def response_1obj(dec, theta, cfg):
-    """``[n_theta, n_inputs]`` expected population response — `decoder_v2.response_1obj`."""
+    """``[n_theta, n_inputs]`` expected population response — `decoder.response_1obj`."""
     return pl.population_response_1obj(
-        dec["units_1obj"],
-        theta,
-        cfg["NUM_REPLICAS"],
-        cfg["SAMPLE_SIGMA_DEG"],
-        True,
+        dec["units_1obj"], theta, cfg["NUM_REPLICAS"], cfg["SAMPLE_SIGMA_DEG"]
     )
 
 
@@ -313,7 +289,6 @@ def sample_1obj(dec, theta, cfg, rng):
         cfg["NUM_REPLICAS"],
         cfg["SAMPLE_SIGMA_DEG"],
         rng,
-        True,
     )
 
 
@@ -330,13 +305,13 @@ def _refine(grid, values, phi):
     return grid[i] + np.clip(off, -0.5, 0.5) * (2 * np.pi / n)
 
 
-def errors_1obj(dec, theta, R, cfg, refine=False):
+def errors_1obj(dec, theta, R, cfg):
     """Signed error (deg, in (-180, 180]) of the decode's **nearest local maximum** to the
     object, per row of ``R`` — `nearest_max_errors`' convention, with one object. NaN where
     the decode has no maximum. Positive = the decode sits counter-clockwise of the object.
 
-    ``refine=False`` is `decoder_v2`'s convention exactly (a maximum is a grid point);
-    ``refine=True`` places it between grid points by :func:`_refine`.
+    Unlike `decoder`'s convention (a maximum is a grid point), each maximum is placed between
+    grid points by :func:`_refine`.
     """
     grid = dl.decode_grid()
     out = np.full(len(theta), np.nan)
@@ -346,8 +321,7 @@ def errors_1obj(dec, theta, R, cfg, refine=False):
             grid, D, min_height_frac=cfg["PEAK_MIN_HEIGHT_FRAC"]
         )
         if len(peaks):
-            if refine:
-                peaks = np.array([_refine(grid, D, ph) for ph in peaks])
+            peaks = np.array([_refine(grid, D, ph) for ph in peaks])
             d = (peaks - t + np.pi) % (2 * np.pi) - np.pi
             out[i] = np.degrees(d[np.argmin(np.abs(d))])
     return out
@@ -357,21 +331,19 @@ def errors_1obj(dec, theta, R, cfg, refine=False):
 SWEEP_DIR = CACHE_ROOT / "errors_1obj"
 
 
-def error_sweep(
-    subject, boot, step_deg, n_samples, seed, refine, cfg=None, verbose=True
-):
+def error_sweep(subject, boot, step_deg, n_samples, seed, cfg):
     """1-object errors around the ring for one decoder, as a long table.
 
     Two kinds of row: ``kind='mean'``, the decode of the population's **expected** response at
-    each angle (what `decoder_v2`'s ring panels show); and ``kind='trial'``, decodes of
+    each angle (what `decoder`'s ring panels show); and ``kind='trial'``, decodes of
     **single-trial** population responses (what the decoder is fit on), ``n_samples`` per
     angle. Sample ``k`` is drawn with ``default_rng([seed, boot, k, subject code])``, so raising
     `n_samples` computes only the new samples: the cache holds a ``sample`` column rather than
-    being keyed on how many there are.
+    being keyed on how many there are. Maxima are refined between grid points
+    (:func:`errors_1obj`), which the ``refine1`` in the cache file name records.
     """
-    cfg = decoder_config() if cfg is None else cfg
     dec_key = _key(cfg, subject, boot)
-    tag = f"{subject}_boot{int(boot)}_step{step_deg:g}_seed{seed}_refine{int(refine)}"
+    tag = f"{subject}_boot{int(boot)}_step{step_deg:g}_seed{seed}_refine1"
     path = SWEEP_DIR / f"{tag}.csv"
     old = pd.read_csv(path) if path.exists() else pd.DataFrame()
     if len(old) and (old["decoder_key"].iloc[0] != dec_key):
@@ -393,9 +365,7 @@ def error_sweep(
     dec = load_decoder(subject, boot, cfg)
     parts = [old] if len(old) else []
     if not have_mean:
-        e = errors_1obj(
-            dec, theta, response_1obj(dec, theta, cfg), cfg, refine
-        )
+        e = errors_1obj(dec, theta, response_1obj(dec, theta, cfg), cfg)
         parts.append(
             pd.DataFrame(
                 dict(kind="mean", sample=-1, theta_deg=theta_deg, err_deg=e)
@@ -404,9 +374,7 @@ def error_sweep(
     code = sum(map(ord, subject))
     for k in todo:
         rng = np.random.default_rng([seed, int(boot), k, code])
-        e = errors_1obj(
-            dec, theta, sample_1obj(dec, theta, cfg, rng), cfg, refine
-        )
+        e = errors_1obj(dec, theta, sample_1obj(dec, theta, cfg, rng), cfg)
         parts.append(
             pd.DataFrame(
                 dict(kind="trial", sample=k, theta_deg=theta_deg, err_deg=e)
@@ -418,12 +386,11 @@ def error_sweep(
     tmp = path.with_suffix(".tmp")
     df.to_csv(tmp, index=False)
     tmp.replace(path)
-    if verbose:
-        print(
-            f'  {subject} boot {boot}: {"mean + " if not have_mean else ""}{len(todo)} new '
-            f"single-trial sweeps cached",
-            flush=True,
-        )
+    print(
+        f'  {subject} boot {boot}: {"mean + " if not have_mean else ""}{len(todo)} new '
+        f"single-trial sweeps cached",
+        flush=True,
+    )
     return df[(df["kind"] == "mean") | (df["sample"] < n_samples)].reset_index(
         drop=True
     )

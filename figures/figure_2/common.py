@@ -14,26 +14,18 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from matplotlib import pyplot as plt
 
 # The east-west antipodal exclusion, shared by every figure in figures/ (see
 # ../trial_filters.py). It is applied to every 2-object analysis without exception.
 _FIGURES = Path(__file__).resolve().parent.parent
 if str(_FIGURES) not in sys.path:
     sys.path.insert(0, str(_FIGURES))
-import config  # noqa: E402  the one place selection criteria are set
-from trial_filters import (  # noqa: E402
-    drop_east_west,
-    drop_east_west_arrays,
-    east_west_mask,
-)
+from trial_filters import drop_east_west  # noqa: E402
 
 if str(_FIGURES.parent) not in sys.path:
     sys.path.insert(0, str(_FIGURES.parent))
+import paths  # noqa: E402  (the repository root is on sys.path just above)
 from phys_processing import spike_counts as spike_counts_lib  # noqa: E402
-
-ROOT = Path("../..")
-RING_CSV = ROOT / "cache/behavior_processing/ring.csv"
 
 BIN_MS = spike_counts_lib.BIN_MS  # width of a spike-count bin
 LEAD_IN_MS = (
@@ -44,10 +36,10 @@ FR_WINDOW = (
     2000,
 )  # default window for a mean firing rate: stimulus + delay
 
-# The style block, the PDF writer and `despine` live in `figures/style.py` and are
-# re-exported here, so every notebook keeps calling `common.set_style()` while there is only
-# one definition of what the style IS. See FORMATTING.md.
-from style import despine, save, set_style  # noqa: F401
+# The style block and the PDF writer live in `figures/style.py` and are re-exported here, so
+# notebooks call `common.set_style()` while there is only one definition of what the style IS.
+# See FORMATTING.md.
+from style import save, set_style  # noqa: F401
 
 
 # ── data ──────────────────────────────────────────────────────────────────────
@@ -58,7 +50,7 @@ def load_behavior(subject, session, num_objects=None):
     PSTHs and the per-anchor fits alike — is over the same trials
     (see `../trial_filters.py`).
     """
-    df = pd.read_csv(RING_CSV)
+    df = pd.read_csv(paths.RING_CSV)
     mask = (
         (df["subject"] == subject)
         & (df["session"] == session)
@@ -83,19 +75,15 @@ def load_unit(subject, session, unit_id):
     return spike_counts, trials, f"{unit.probe}/{unit.quality}"
 
 
-def mean_response_time_ms(behavior, trials=None):
-    """Mean time of the animal's response, in ms after stimulus onset.
+def mean_response_time_ms(behavior, trials):
+    """Mean time of the animal's response over `trials`, in ms after stimulus onset.
 
     `ring.csv` stores every event as a session-clock timestamp in seconds, so this is
     `1000 * mean(response_time - time_stimulus_onset)`. `response_time` is when the response
     landed and is what varies trial to trial; `time_response_onset` is a fixed 250 ms after
     the cue and would just redraw a task boundary.
     """
-    df = (
-        behavior
-        if trials is None
-        else behavior[behavior["trial_num"].isin(list(trials))]
-    )
+    df = behavior[behavior["trial_num"].isin(list(trials))]
     dt = (df["response_time"] - df["time_stimulus_onset"]).dropna()
     return float(dt.mean() * 1000.0) if len(dt) else float("nan")
 

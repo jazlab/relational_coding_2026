@@ -21,7 +21,7 @@ Why this is a reimplementation, and how faithful it is
 ------------------------------------------------------
 ``../../data_exploration/task_visualization/renderer.py`` is the authority on how a frame looks, but it
 imports ``moog``, which is not installed here. Rather than approximate, the two steps that
-matter are reproduced **exactly** from that file, and the constants are read from it:
+matter are reproduced **exactly** from that file, and the constants are copied from it:
 
 * **The background** (``Renderer.__init__``): load ``background_noise.npy``, take
   ``clip(3n - 1, 0, 1)``, resize 2x with bilinear interpolation, rescale so the mean is
@@ -48,6 +48,7 @@ channel mean, which is the same story to two decimal places.
 """
 
 import functools
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -67,11 +68,14 @@ LUMA = np.array([0.2126, 0.7152, 0.0722])
 
 OBJECT_IDS = ("a", "b", "c")
 
-_TASK_VIS = (
+_REPO = (
     Path(__file__).resolve().parents[2]
-    / "data_exploration"
-    / "task_visualization"
-)
+)  # repository root, where paths.py lives
+if str(_REPO) not in sys.path:
+    sys.path.insert(0, str(_REPO))
+import paths  # noqa: E402
+
+_TASK_VIS = paths.TASK_VISUALIZATION
 _RESOURCES = _TASK_VIS / "resources"
 
 
@@ -81,7 +85,7 @@ def luminance(rgb):
 
 
 @functools.lru_cache(maxsize=1)
-def background_image(image_size=IMAGE_SIZE):
+def background_image():
     """The task's background field as a float array in [0, 1] — ``Renderer.__init__``'s
     construction, reproduced step for step."""
     noise = np.load(_RESOURCES / "background_noise.npy")
@@ -98,10 +102,10 @@ def background_image(image_size=IMAGE_SIZE):
 
 
 @functools.lru_cache(maxsize=8)
-def object_patch(object_id, image_size=IMAGE_SIZE):
+def object_patch(object_id):
     """``(rgb, opaque)`` for one identity's image: the resized, flipped JPEG in [0, 1], and
     the boolean mask of the pixels the renderer actually draws."""
-    size = int(np.floor(PATCH_FACTOR * PREY_SCALE * image_size))
+    size = int(np.floor(PATCH_FACTOR * PREY_SCALE * IMAGE_SIZE))
     im = Image.open(_RESOURCES / "objects" / f"{object_id}.jpg")
     im = im.resize((size, size)).transpose(Image.FLIP_TOP_BOTTOM)
     rgb8 = np.asarray(im)
@@ -110,33 +114,33 @@ def object_patch(object_id, image_size=IMAGE_SIZE):
 
 
 @functools.lru_cache(maxsize=8)
-def object_composite(object_id, image_size=IMAGE_SIZE):
+def object_composite(object_id):
     """``(rgb, disc)`` — the object as it appears on screen, and the disc it occupies.
 
     The canvas is the white circle; the identity's image is composited onto it through the
     renderer's mask. Returned at patch resolution with the disc marked, which is all the
     contrast needs.
     """
-    rgb, opaque = object_patch(object_id, image_size)
+    rgb, opaque = object_patch(object_id)
     size = rgb.shape[0]
     canvas = np.ones_like(rgb)  # the white circle
     canvas[opaque] = rgb[opaque]
 
     # the disc, in the patch's own pixel grid
-    radius_px = PREY_SCALE * image_size
+    radius_px = PREY_SCALE * IMAGE_SIZE
     centre = (size - 1) / 2.0
     yy, xx = np.mgrid[0:size, 0:size]
     disc = ((xx - centre) ** 2 + (yy - centre) ** 2) <= radius_px**2
     return canvas, disc
 
 
-def object_contrast(object_id, image_size=IMAGE_SIZE):
+def object_contrast(object_id):
     """Every quantity behind one identity's contrast, as a dict, so the working can be
     inspected rather than the number taken on trust."""
-    canvas, disc = object_composite(object_id, image_size)
-    _, opaque = object_patch(object_id, image_size)
+    canvas, disc = object_composite(object_id)
+    _, opaque = object_patch(object_id)
     lum = luminance(canvas)
-    bg = background_image(image_size)
+    bg = background_image()
 
     l_obj = float(lum[disc].mean())
     l_bg = float(bg.mean())
@@ -157,12 +161,12 @@ def object_contrast(object_id, image_size=IMAGE_SIZE):
 
 
 @functools.lru_cache(maxsize=1)
-def contrasts(image_size=IMAGE_SIZE):
+def contrasts():
     """``{object_id: Michelson contrast}`` for the three identities."""
-    return {k: object_contrast(k, image_size)["michelson"] for k in OBJECT_IDS}
+    return {k: object_contrast(k)["michelson"] for k in OBJECT_IDS}
 
 
-def relative_contrast(id_a, id_b, image_size=IMAGE_SIZE):
+def relative_contrast(id_a, id_b):
     r"""The **signed relative contrast** of object A against object B,
 
         d = (C_A - C_B) / (C_A + C_B),
@@ -173,7 +177,7 @@ def relative_contrast(id_a, id_b, image_size=IMAGE_SIZE):
     Zero when the two objects are equally visible, which the task never shows: the two
     objects on a trial always have different identities.
     """
-    c = contrasts(image_size)
+    c = contrasts()
     ca = np.asarray([c[i] for i in np.atleast_1d(id_a)], float)
     cb = np.asarray([c[i] for i in np.atleast_1d(id_b)], float)
     tot = ca + cb

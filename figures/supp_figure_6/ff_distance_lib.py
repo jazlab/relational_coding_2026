@@ -15,7 +15,7 @@ Everything lives in the plane, in units of the ring radius ``R = 1``. Object X s
 ``p_X = (cos φ_X, sin φ_X)``.
 
 * **Receptive field.** A circular 2-D Gaussian bump centred at ``c = ρ·(cos θ, sin θ)``, with
-  ``ρ = rf_ecc`` (1.2 by default: just outside the ring) **held fixed**, and spatial s.d.
+  ``ρ = rf_ecc`` (``RF_ECC`` in the notebook: outside the ring) **held fixed**, and spatial s.d.
   ``σ = width`` (in ring radii) **fit**::
 
       g(x) = exp(−|x − c|² / 2σ²)
@@ -40,11 +40,9 @@ Everything lives in the plane, in units of the ring radius ``R = 1``. Object X s
 
       rate = b + a_ret·[g(p_A) + g(p_B)] + a_ff·[h_B(p_A) + h_A(p_B)]
 
-  ``h_B(p_A)`` is A's drive on the future field for a saccade to B. By default the target's own
-  drive on its future field, ``h_T(p_T) = exp(−(1 − κ)²ρ² / 2σ²)``, is **left out**, as figure 4
-  leaves it out (the target is at the new fovea, where ``remap_angle`` is undefined). It is the
-  same on every trial, so including it (``include_target=True``) only adds
-  ``2·a_ff·h_T(p_T)`` to the baseline — but with the baseline bounded at 0 that can matter.
+  ``h_B(p_A)`` is A's drive on the future field for a saccade to B. The target's own drive on
+  its future field, ``h_T(p_T) = exp(−(1 − κ)²ρ² / 2σ²)``, is **left out**, as figure 4 leaves
+  it out (the target is at the new fovea, where ``remap_angle`` is undefined).
 
 With ``κ = 1`` the future-field term is ``2·exp(−|p_A − p_B|² / 2σ²)``: a function of the
 objects' separation alone, blind to where the pair is. Whatever relational structure the fits
@@ -56,11 +54,11 @@ Five free parameters — ``baseline, theta, width (σ), amplitude_retinotopic,
 amplitude_remapped`` — with ``rf_ecc`` and ``convergence`` fixed per fit. Fit by figure 4's own
 multi-start maximum-likelihood routine (`fit_lib._fit`: Poisson likelihood of the 2-s spike count
 on every 2-object trial, coarse L-BFGS-B over all starts then the best polished), on the same
-trials figure 4's fits use (`data_lib.session_unit_trials`). Starts: ``n_theta_starts`` preferred
+trials figure 4's fits use (`data_lib.session_unit_trials`). Starts: ``fit_lib.N_THETA_STARTS`` preferred
 directions × three σ × ``a_ff ∈ {0, a/2}``.
 
-Fits are cached one row per (neuron, ρ, κ, include_target) in ``cache/fits.csv`` in this
-directory, so changing the κ grid fits only the new values.
+Fits are cached one row per (neuron, ρ, κ) in
+``cache/figures/supp_figure_6/fits.csv``, so changing the κ grid fits only the new values.
 """
 
 import os
@@ -80,7 +78,14 @@ import fit_lib as fl  # noqa: E402
 import models_lib as ml  # noqa: E402
 
 EXAMPLES_NOTEBOOK = FIGURE_4 / "figure_example_neurons.ipynb"
-CACHE_PATH = _HERE / "cache" / "fits.csv"
+_REPO = (
+    Path(__file__).resolve().parents[2]
+)  # repository root, where paths.py lives
+if str(_REPO) not in sys.path:
+    sys.path.insert(0, str(_REPO))
+import paths  # noqa: E402
+
+CACHE_PATH = paths.FIGURES_CACHE / "supp_figure_6/fits.csv"
 SIGMA_STARTS = (0.25, 0.5, 1.0)  # σ starting values, ring radii
 PARAMS = (
     "baseline",
@@ -123,11 +128,10 @@ class DistanceFutureFieldModel(ml.Model):
     params = PARAMS
     _one_object_amplitude = "amplitude_retinotopic"
 
-    def __init__(self, rf_ecc=1.2, convergence=0.0, include_target=False):
+    def __init__(self, rf_ecc, convergence):
         super().__init__()
         self.rf_ecc = float(rf_ecc)
         self.convergence = float(convergence)
-        self.include_target = bool(include_target)
 
     def center(self, p):
         """``c``, the receptive field's centre relative to fixation."""
@@ -154,8 +158,6 @@ class DistanceFutureFieldModel(ml.Model):
         rem = self.future_field(xa, ya, xb, yb, p) + self.future_field(
             xb, yb, xa, ya, p
         )
-        if self.include_target:
-            rem = rem + 2.0 * self.future_field(0.0, 0.0, 0.0, 0.0, p)
         return ret, rem
 
     def rate_2obj(self, p, phi_a, phi_b):
@@ -190,10 +192,10 @@ def _d2(unit):
     return (unit["t0"], unit["t1"], unit["fr2"], np.zeros(len(unit["fr2"])))
 
 
-def _starts(model, p0, cfg):
+def _starts(p0):
     out = []
-    for k in range(cfg.n_theta_starts):
-        th = p0["theta"] + 2 * np.pi * k / cfg.n_theta_starts
+    for k in range(fl.N_THETA_STARTS):
+        th = p0["theta"] + 2 * np.pi * k / fl.N_THETA_STARTS
         for sig in SIGMA_STARTS:
             for a_rem in (0.0, p0["amplitude_remapped"]):
                 out.append(
@@ -219,12 +221,11 @@ def log_lik(model, params, unit):
     return -fl._neg_ll([], model, (), params, _d2(unit))
 
 
-def fit(model, unit, cfg=None):
+def fit(model, unit):
     """``(params, ll)``: the all-trial maximum-likelihood fit with ``rf_ecc`` and ``convergence``
     held at the model's values."""
-    cfg = cfg or fl.FitConfig()
     p0 = model.init_params(ml.unit_init_stats(unit))
-    return fl._fit(model, PARAMS, p0, _d2(unit), _starts(model, p0, cfg), cfg)
+    return fl._fit(model, PARAMS, p0, _d2(unit), _starts(p0))
 
 
 def _key(subject, session, unit_id, model):
@@ -234,7 +235,6 @@ def _key(subject, session, unit_id, model):
         int(unit_id),
         model.rf_ecc,
         model.convergence,
-        model.include_target,
     )
 
 
@@ -244,15 +244,14 @@ _KEY_COLS = [
     "unit",
     "rf_ecc",
     "convergence",
-    "include_target",
 ]
 
 
-def cached_fit(subject, session, unit_id, model, cfg=None, verbose=True):
-    """:func:`fit`, cached one row per (neuron, ρ, κ, include_target) in ``CACHE_PATH``.
+def cached_fit(subject, session, unit_id, model):
+    """:func:`fit`, cached one row per (neuron, ρ, κ) in ``CACHE_PATH``.
     Returns ``(params, dll)`` with ``dll`` the all-trial log-likelihood per trial above a
     constant-rate model (nats/trial)."""
-    cfg = cfg or fl.FitConfig()
+    tag = fl.FitConfig().tag
     key = _key(subject, session, unit_id, model)
     df = (
         pd.read_csv(CACHE_PATH)
@@ -262,25 +261,23 @@ def cached_fit(subject, session, unit_id, model, cfg=None, verbose=True):
     if len(df):
         df["session"] = df["session"].astype(str)
         hit = df[
-            (df["cfg_tag"] == cfg.tag)
+            (df["cfg_tag"] == tag)
             & (df["subject"] == subject)
             & (df["session"] == str(session))
             & (df["unit"] == int(unit_id))
             & np.isclose(df["rf_ecc"], model.rf_ecc)
             & np.isclose(df["convergence"], model.convergence)
-            & (df["include_target"].astype(bool) == model.include_target)
         ]
         if len(hit):
             r = hit.iloc[0]
             return {k: float(r[k]) for k in PARAMS}, float(r["dll"])
     unit = unit_trials(subject, session, unit_id)
-    p, ll = fit(model, unit, cfg)
+    p, ll = fit(model, unit)
     dll = (ll - constant_ll(unit)) / len(unit["fr2"])
-    if verbose:
-        print(
-            f"  fit {subject}/{session} unit {unit_id}  ρ={model.rf_ecc:g} "
-            f"κ={model.convergence:.2f}: ΔLL {dll:.3f} nats/trial"
-        )
+    print(
+        f"  fit {subject}/{session} unit {unit_id}  ρ={model.rf_ecc:g} "
+        f"κ={model.convergence:.2f}: ΔLL {dll:.3f} nats/trial"
+    )
     row = pd.DataFrame(
         [
             dict(
@@ -289,7 +286,7 @@ def cached_fit(subject, session, unit_id, model, cfg=None, verbose=True):
                 ll=ll,
                 dll=dll,
                 n_2obj=len(unit["fr2"]),
-                cfg_tag=cfg.tag,
+                cfg_tag=tag,
             )
         ]
     )
@@ -303,14 +300,14 @@ def cached_fit(subject, session, unit_id, model, cfg=None, verbose=True):
     return p, dll
 
 
-def figure4_fit(subject, session, unit_id, cfg=None):
-    """Figure 4's cached all-trial future-field fit, and its ΔLL (nats/trial)."""
+def figure4_fit(subject, session, unit_id):
+    """``(model, params, dll)``: figure 4's cached all-trial future-field fit and its ΔLL
+    (nats/trial)."""
     import ring_lib
 
-    cfg = cfg or fl.FitConfig()
-    p = ring_lib.unit_fits(subject, session, unit_id, cfg, verbose=False)[
-        "future_field"
-    ]
+    p = ring_lib.unit_fits(
+        subject, session, unit_id, fl.FitConfig(), verbose=False
+    )["future_field"]
     model = ml.build_models(["future_field"])["future_field"]
     unit = unit_trials(subject, session, unit_id)
     dll = (log_lik(model, p, unit) - constant_ll(unit)) / len(unit["fr2"])

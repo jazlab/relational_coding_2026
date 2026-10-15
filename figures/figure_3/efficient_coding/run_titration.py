@@ -16,7 +16,8 @@ Three properties carry the result:
 
 1. **rho is the angle in the two models' held-out excess accuracies** (the model comparison's
    score), and neurons must clear the shared modulation criterion of ``figures/config.py``
-   before entering the pool. Without that cut the neurons neither model explains land at
+   and have both models beat chance out of sample (``min_fit=0.0``, ``SELECTION``) before
+   entering the pool. Without the modulation cut the neurons neither model explains land at
    rho = 0 and masquerade as retinotopic, and they are not equally common in the two animals,
    so the sweeps would not be measuring the same thing.
 2. **The tilt is on rho ranked within subject**, so a sweep point means the same quantile of
@@ -35,6 +36,7 @@ neurons does not also get a bigger model), and ``K`` distinct units at every poi
 import argparse
 import gc
 import os
+import sys
 import time
 from pathlib import Path
 
@@ -47,30 +49,32 @@ for _v in (
 ):
     os.environ.setdefault(_v, "1")
 
-import sys  # noqa: E402
-
 import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 import torch  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+_REPO = (
+    Path(__file__).resolve().parents[3]
+)  # repository root, where paths.py lives
+if str(_REPO) not in sys.path:
+    sys.path.insert(0, str(_REPO))
 import pool_lib as pool  # noqa: E402
 import selection_lib as sel  # noqa: E402
 
-# ── The sweep (figure 3's settings, unchanged so the two curves are comparable) ──
+import paths  # noqa: E402
+
+# ── The sweep ──────────────────────────────────────────────────────────────────
 SWEEP_START, SWEEP_STOP, SWEEP_STEP = 0.1, 0.9, 0.1
 N_REPEATS = 20
 
 N_SAMPLES = 500  # bootstrap inputs = the model's input dimension, fixed
 SAMPLE_SIGMA_DEG = 10.0
-POISSON_SAMPLE = True
 FIRING_RATE_SCALE = 0.1
 PRECOMPUTE_N_GRID = 36
-#: Which neurons are eligible, and on what coordinate — the same dict `titration_lib.SELECTION`
-#: uses, so the pool the figure describes is the pool that was fitted.
-SELECTION = dict(
-    coordinate="angle", exclusion="config", min_fit=0.0, min_fit_mode="both"
-)
+#: Which neurons are eligible — the same dict `titration_lib.SELECTION` uses, so the pool the
+#: figure describes is the pool that was fitted.
+SELECTION = dict(exclusion="config", min_fit=0.0)
 
 MIN_SEP_DEG, N_ANGLES, TARGET_SIGMA_DEG = 80.0, 96, 12.0
 HIDDEN_SIZES, BATCH_SIZE, N_STEPS, LR = [64, 64], 128, 1000, 2e-3
@@ -81,7 +85,7 @@ SWEEP = np.round(np.arange(SWEEP_START, SWEEP_STOP + 1e-9, SWEEP_STEP), 4)
 
 
 def matched_k(data):
-    """`K`: the smallest wedge over the **whole** sweep — 160 (Monkey P) / 51 (Monkey E).
+    """`K`: the smallest wedge over the **whole** sweep — 186 (Monkey P) / 62 (Monkey E).
 
     Every sweep point draws exactly this many distinct units, the extremes included, so no point
     on the curve is measured with more neurons than another. Taking K from a sub-range instead
@@ -161,13 +165,13 @@ def tilt_positions(rho, lam, k, rng):
     return np.argpartition(-keys, k - 1)[:k]
 
 
-def run_point(data, subject, x, i, k, lam, cfg, grid):
-    """``N_REPEATS`` trainings at one sweep point. Returns its rows.
+def run_point(data, subject, x, i, k, lam, cfg):
+    """``N_REPEATS`` trainings at one sweep point. Returns its rows and the pool size.
 
     Every unit is eligible at every ``lam``, and the draw is always ``k`` distinct units, so no
     point is ever short and every point on the curve is comparable to every other.
     """
-    pos, (lo, hi) = np.arange(len(data["rho"])), (np.nan, np.nan)
+    n_pool = len(data["rho"])
     # The tilt is on the WITHIN-ANIMAL RANK of rho, which is what makes lam mean the same thing
     # in both animals and lam = 0 exactly the unbiased population (see lam_for_mean_rank).
     tilt_stat = data["rank"]
@@ -178,14 +182,13 @@ def run_point(data, subject, x, i, k, lam, cfg, grid):
         sub_pos = tilt_positions(
             tilt_stat, lam, k, boot_rng
         )  # redrawn every repeat
-        unit_rows, shifts, _ = pool.sample_bootstrap_table_inputs(
+        unit_rows, shifts = pool.sample_bootstrap_table_inputs(
             sub_pos, N_SAMPLES, PRECOMPUTE_N_GRID, boot_rng
         )
         neural_fn = pool.make_table_neural_fn(
             data["tables"],
             unit_rows,
             shifts,
-            poisson_sample=POISSON_SAMPLE,
             firing_rate_scale=FIRING_RATE_SCALE,
         )
         torch.manual_seed(SEED + 100 * i + r)
@@ -195,7 +198,7 @@ def run_point(data, subject, x, i, k, lam, cfg, grid):
             hidden_sizes=tuple(HIDDEN_SIZES),
         )
         pool.train_model(model, neural_fn, cfg, train_rng)
-        _, _, err = pool.evaluate_error(
+        err = pool.evaluate_error(
             model,
             neural_fn,
             cfg,
@@ -206,17 +209,13 @@ def run_point(data, subject, x, i, k, lam, cfg, grid):
         rows.append(
             dict(
                 subject=subject,
+                # The sweep point x, which is the target weighted mean rank.
                 sweep_fraction=float(x),
                 repeat=r,
                 lam=float(lam),
-                mean_rank_target=float(x),
-                wedge_lo=lo,
-                wedge_hi=hi,
-                pool_size=len(pos),
+                pool_size=n_pool,
+                # Always K: every point is drawn at exactly K distinct units.
                 n_units=len(sub_pos),
-                # Always True: a point that could not be run at K is skipped, not down-sized. Kept
-                # so the column means the same thing in these CSVs as in the ones that predate it.
-                k_matched=True,
                 # The x axis the figure actually uses: what the decoder received, not what was
                 # asked for. `_inputs` is over the N_SAMPLES bootstrap draws (with replacement,
                 # so it is the composition the model saw); `_units` is over distinct neurons.
@@ -232,22 +231,19 @@ def run_point(data, subject, x, i, k, lam, cfg, grid):
         )
         del model, neural_fn, err
     gc.collect()
-    return rows, len(pos)
+    return rows, n_pool
 
 
 def stamp_params(df, lams, k):
     """What this run was, written onto every row, so a CSV is self-describing.
 
-    These are all constants of the module now rather than knobs -- there is nothing left to vary
-    -- but they are still worth recording: `titration.ipynb` prints them as its provenance line,
-    and a CSV that outlives a change to one of these constants says so itself instead of being
-    silently averaged with a newer one.
+    These are all constants of the module rather than knobs, but they are still worth recording:
+    `titration.ipynb` prints them as its provenance line, and a CSV that outlives a change to one
+    of these constants says so itself instead of being silently averaged with a newer one.
     """
     df = df.copy()
-    df["param_coordinate"] = SELECTION["coordinate"]
     df["param_exclusion"] = SELECTION["exclusion"]
     df["param_min_fit"] = SELECTION["min_fit"]
-    df["param_min_fit_mode"] = SELECTION["min_fit_mode"]
     df["param_tilt_on"] = "rank"
     df["param_lams"] = ",".join(f"{v:g}" for v in lams)
     df["param_n_units_matched"] = int(k)
@@ -267,9 +263,8 @@ def main():
     ap.add_argument(
         "--out-dir",
         default=None,
-        help="write dataframes/ here instead of next to this script, so a "
-        "neighbouring directory can own its own results without a second "
-        "copy of this file",
+        help="write the results here instead of "
+        "cache/figures/figure_3/efficient_coding/dataframes/",
     )
     ap.add_argument("--threads", type=int, default=6)
     ap.add_argument("--repeats", type=int, default=N_REPEATS)
@@ -313,9 +308,10 @@ def main():
         "sweep point (target mean rank) -> lambda:  "
         + "  ".join(f"{x:g}->{l:+.2f}" for x, l in zip(SWEEP, lams))
     )
-    name = args.name or f"results_tilt_b{args.repeats}"
+    name = args.name or "results"
     out_dir = Path(
-        args.out_dir or (Path(__file__).resolve().parent / "dataframes")
+        args.out_dir
+        or (paths.FIGURES_CACHE / "figure_3/efficient_coding/dataframes")
     )
     out_dir.mkdir(parents=True, exist_ok=True)
     parts = out_dir / f"{name}_parts"
@@ -329,9 +325,6 @@ def main():
         n_steps=N_STEPS,
         lr=LR,
     )
-    import decoder_lib as _dec
-
-    grid = _dec.stimulus_grid(N_ANGLES)
 
     if args.combine_only:
         frames = [pd.read_csv(f) for f in sorted(parts.glob("*.csv"))]
@@ -364,10 +357,9 @@ def main():
             with_tables=not args.dry_run,
             **SELECTION,
         )
+        # K is the smallest rank wedge over the sweep (see matched_k); the wedges are only used
+        # to size it, never to select.
         sizes = [len(sel.wedge_positions(data["rank"], x)[0]) for x in SWEEP]
-        # K comes from the WEDGE family even under --sampling tilt, deliberately: it keeps the
-        # two runs at the same number of distinct units, so their curves differ by the sampling
-        # rule and nothing else.
         k = matched_k(data)
         print(
             f"  wedge sizes {sizes}  -> K = {k} (every point, the extremes included)"
@@ -393,13 +385,7 @@ def main():
                 print(f"  x={x:.2f}  (checkpoint)", flush=True)
                 continue
             t1 = time.time()
-            rows, npool = run_point(data, subject, x, i, k, lams[i], cfg, grid)
-            if not rows:
-                print(
-                    f"  x={x:.2f}  pool={npool:4d}  SKIPPED (fewer than K={k})",
-                    flush=True,
-                )
-                continue
+            rows, npool = run_point(data, subject, x, i, k, lams[i], cfg)
             df = stamp_params(pd.DataFrame(rows), lams, k)
             tmp = part.with_suffix(".csv.tmp")
             df.to_csv(tmp, index=False)

@@ -28,10 +28,11 @@ import pandas as pd
 _ROOT = Path(__file__).resolve().parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
+import paths  # noqa: E402
 from phys_processing import spike_counts as spike_counts_lib  # noqa: E402
 
-RING_PATH = _ROOT / "cache/behavior_processing/ring.csv"
-FR_DIR = _ROOT / "cache/figures/shared_inputs/firing_rates"
+RING_PATH = paths.RING_CSV
+FR_DIR = paths.SHARED_INPUTS / "firing_rates"
 
 STIM_MS = (0, 1000)
 DELAY_MS = (1000, 2000)
@@ -73,15 +74,15 @@ def sessions():
     return [s for s in spike_counts_lib.sessions() if s in have]
 
 
-def session_path(subject, session, build=True, verbose=True):
-    """The session's firing-rate file, building it first if it is missing and ``build``."""
+def session_path(subject, session):
+    """The session's firing-rate file, building it first if it is missing."""
     path = FR_DIR / f"{subject}_{session}.csv.gz"
-    if build and not path.exists():
-        build_sessions([(subject, session)], verbose=verbose)
+    if not path.exists():
+        build_sessions([(subject, session)])
     return path
 
 
-def ensure_all(verbose=True):
+def ensure_all():
     """Build every missing session, then return the full session list."""
     all_sessions = sessions()
     missing = [
@@ -90,19 +91,18 @@ def ensure_all(verbose=True):
         if not (FR_DIR / f"{s[0]}_{s[1]}.csv.gz").exists()
     ]
     if missing:
-        if verbose:
-            print(
-                f"Building firing rates for {len(missing)} of {len(all_sessions)} sessions "
-                f"into {FR_DIR}"
-            )
-        build_sessions(missing, verbose=verbose)
+        print(
+            f"Building firing rates for {len(missing)} of {len(all_sessions)} sessions "
+            f"into {FR_DIR}"
+        )
+        build_sessions(missing)
     return all_sessions
 
 
-def build_sessions(sessions_to_build=None, overwrite=False, verbose=True):
+def build_sessions(sessions_to_build=None, verbose=True):
     """Write ``FR_DIR/{subject}_{session}.csv.gz`` for each session; returns the paths.
 
-    Sessions whose file already exists are skipped unless ``overwrite``.
+    Sessions whose file already exists are skipped.
     """
     sessions_to_build = sessions_to_build or sessions()
     FR_DIR.mkdir(parents=True, exist_ok=True)
@@ -117,7 +117,7 @@ def build_sessions(sessions_to_build=None, overwrite=False, verbose=True):
     written = []
     for subject, session in sessions_to_build:
         out_path = FR_DIR / f"{subject}_{session}.csv.gz"
-        if out_path.exists() and not overwrite:
+        if out_path.exists():
             written.append(out_path)
             continue
         meta = behavior[

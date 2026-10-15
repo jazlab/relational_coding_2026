@@ -6,9 +6,8 @@ midpoint direction ``m`` (objects at ``m − s/2`` and ``m + s/2``).
 
 Real neurons — the rate is measured
 -----------------------------------
-:func:`curve` is `figure_2/psth_lib.dense_2obj_tuning`'s binning exactly — the trials, rates and
-window `tuning_plots.ipynb`'s line row uses — vectorised so it can be sampled every couple of
-degrees:
+:func:`curve` is `figure_2/psth_lib.dense_2obj_tuning`'s binning exactly — the same trials,
+rates and similarity window — vectorised so it can be sampled every couple of degrees:
 
 * **Bin membership.** A trial joins chord ``k`` when *both* of its objects are within
   ``window`` of their own end of the chord, matching objects to ends whichever way fits better
@@ -17,9 +16,8 @@ degrees:
   ``tuning_lib.SMOOTH_HALF_WIN_MS`` temporal smoothing (`psth_lib.per_trial_mean_fr`), averaged
   over the bin's trials. The east-west antipodal pair is dropped (`psth_lib.load_behavior`).
 
-:func:`check_against_tuning_lib` confirms the curve equals `tuning_lib.unit_curves` on its grid.
-The notebook smooths it (`tuning_plots`' line-row smoothing) before :func:`local_maxima` picks the
-peaks.
+The notebook smooths it with a circular Gaussian (``data_lib.LINE_SMOOTH_DEG_2OBJ``) before
+:func:`local_maxima` picks the peaks.
 
 **The task never shows objects closer than about 80° apart**, so a narrow chord's bin can only
 recruit *wider* pairs and measures a larger separation than its label; :func:`curve` returns each
@@ -30,9 +28,6 @@ Idealized neurons — the rate is the model
 :func:`neuron_params` builds a relational-bias neuron (`models_lib.RelationalBiasModel`, the model
 whose ``bias`` is figure 4's relationality) and :func:`extreme_pairs` finds its maxima from the
 noise-free model rate.
-
-Copied from `figures/tmp/` (`empirical_lib.py`, `frames_lib.py`), where the figure was
-developed, so this directory does not import from a scratch one.
 """
 
 import models_lib as ml
@@ -71,11 +66,11 @@ def unit_trials(subject, session, unit_id):
     )
 
 
-def curve(trials, sep_deg, n_dense, window_deg, offset_rad=0.0):
+def curve(trials, sep_deg, n_dense, window_deg):
     """``(mid, rate, n_trials, mean_sep_deg)`` over ``n_dense`` chord midpoints evenly spanning
-    the circle from ``offset_rad``. NaN rate where a bin is empty."""
+    the circle from 0. NaN rate where a bin is empty."""
     t0, t1, fr = trials
-    mid = offset_rad + np.linspace(0, 2 * np.pi, n_dense, endpoint=False)
+    mid = np.linspace(0, 2 * np.pi, n_dense, endpoint=False)
     half = np.radians(sep_deg) / 2
     p0, p1 = (mid - half)[:, None], (mid + half)[:, None]
     d = np.minimum(
@@ -107,25 +102,6 @@ def local_maxima(mid, rate, n_max, min_prominence, period=2 * np.pi):
     return idx_all[pk]
 
 
-def check_against_tuning_lib(
-    subject, session, unit_id, sep_deg=90, n_dense=36, window_deg=15.0
-):
-    """Largest |difference| (Hz) between :func:`curve` and `tuning_lib.unit_curves` on the same
-    grid — the evidence this is the same binning."""
-    ref = tuning_lib.unit_curves(
-        subject,
-        session,
-        unit_id,
-        [sep_deg],
-        n_dense=n_dense,
-        similarity_window_deg=window_deg,
-    )[sep_deg]
-    _, r, _, _ = curve(
-        unit_trials(subject, session, unit_id), sep_deg, n_dense, window_deg
-    )
-    return float(np.nanmax(np.abs(np.asarray(ref[1]) - r)))
-
-
 # ── Idealized neurons ─────────────────────────────────────────────────────────
 def neuron_params(
     bias, theta_deg=90.0, hwhm_deg=40.0, baseline=2.0, amplitude=10.0
@@ -145,9 +121,7 @@ def rates(params, phi_a, phi_b):
     return ml.rectify(MODEL.rate_2obj(params, phi_a, phi_b))
 
 
-def model_extreme_pairs(
-    model, params, sep_deg, n, kind="max", dctr=None, step_deg=0.25
-):
+def model_extreme_pairs(model, params, sep_deg, n, kind="max", dctr=None):
     """The ``n`` most extreme ``sep_deg``-apart pairs of **any** figure-4 model with parameters
     ``params``, as ``[(phi_a, phi_b, rate), ...]``, most extreme first: the highest local maxima
     (``kind='max'``) or lowest local minima (``'min'``) of the predicted rate against the pair's
@@ -158,7 +132,7 @@ def model_extreme_pairs(
     (`models_lib.rate_2obj` dispatches on it); every other model ignores it.
     """
     span = np.pi if np.isclose(sep_deg, 180.0) else 2 * np.pi
-    mid = np.arange(0.0, span, np.radians(step_deg))
+    mid = np.arange(0.0, span, np.radians(0.25))
     half = np.radians(sep_deg) / 2
     d = None if dctr is None else np.full(len(mid), float(dctr))
     r = ml.rectify(ml.rate_2obj(model, params, mid - half, mid + half, d))
@@ -172,46 +146,25 @@ def model_extreme_pairs(
     return [(mid[i] - half, mid[i] + half, float(r[i])) for i in idx]
 
 
-def extreme_pairs(params, sep_deg, n, kind="max", step_deg=0.25):
+def extreme_pairs(params, sep_deg, n, kind="max"):
     """:func:`model_extreme_pairs` for an idealized relational-bias neuron (:func:`neuron_params`)."""
-    return model_extreme_pairs(
-        MODEL, params, sep_deg, n, kind, step_deg=step_deg
-    )
+    return model_extreme_pairs(MODEL, params, sep_deg, n, kind)
 
 
-def drawn_model_chords(
-    model, params, separations, tie_tol, show_all=False, dctr=None
-):
+def drawn_model_chords(model, params, separations, dctr=None):
     """The maximum chords a model draws: per separation ``sep`` (``{sep: n}``), its highest
-    ``n`` local maxima, keeping a second one only if it ties the first within ``tie_tol`` of the
-    model's response range (the lowest to highest single extreme over ``separations``).
-    ``tie_tol=None`` keeps every maximum found.
-    Returns ``(chords, report)``: ``[(phi_a, phi_b, rate, sep), ...]`` and one line per maximum
-    found, saying whether it was drawn."""
-    allr = [
-        r
-        for sep in separations
-        for k in ("max", "min")
-        for *_, r in model_extreme_pairs(model, params, sep, 1, k, dctr)
-    ]
-    rng = max(allr) - min(allr)
+    ``n`` local maxima.
+    Returns ``(chords, report)``: ``[(phi_a, phi_b, rate, sep), ...]`` and one line per maximum.
+    """
     chords, report = [], []
     for sep, n in separations.items():
         found = model_extreme_pairs(model, params, sep, n, "max", dctr)
         for i, (a, c, r) in enumerate(found):
-            drawn = (
-                tie_tol is None
-                or i == 0
-                or abs(r - found[0][2]) <= tie_tol * rng
-                or show_all
-            )
             report.append(
                 f"{sep:3d}° max #{i + 1}: objects at {np.degrees(a) % 360:5.1f}° and "
                 f"{np.degrees(c) % 360:5.1f}°, {r:5.2f} Hz"
-                f'{"" if drawn else "  (not drawn: does not tie the first)"}'
             )
-            if drawn:
-                chords.append((a, c, r, sep))
+            chords.append((a, c, r, sep))
     return chords, report
 
 

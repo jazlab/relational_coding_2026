@@ -5,18 +5,14 @@ here so it is defined once: the matplotlib style, the ring-task table and its pe
 bookkeeping, the two monkeys' names, the ring-and-fixation-cross drawing that three of the
 figures start from, and the boxed legend three of them end with.
 
-Everything is a plain function with the tuned values as defaults. The figures are tuned, so
-the numbers matter — but they are settled, and a knob nobody turns is just something else to
-read.
+Everything is a plain function with the figures' values as defaults.
 """
 
 import sys
-import warnings
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from matplotlib import pyplot as plt
 from matplotlib.lines import Line2D
 
 # The east-west antipodal exclusion, shared by every figure in figures/ (see
@@ -24,21 +20,21 @@ from matplotlib.lines import Line2D
 _FIGURES = Path(__file__).resolve().parent.parent
 if str(_FIGURES) not in sys.path:
     sys.path.insert(0, str(_FIGURES))
-import config  # noqa: E402  the one place selection criteria are set
-from trial_filters import (  # noqa: E402
-    drop_east_west,
-    drop_east_west_arrays,
-    east_west_mask,
-)
+from trial_filters import drop_east_west, east_west_mask  # noqa: E402
 
-RING_CSV = Path("../../cache/behavior_processing/ring.csv")
+_REPO = (
+    Path(__file__).resolve().parents[2]
+)  # repository root, where paths.py lives
+if str(_REPO) not in sys.path:
+    sys.path.insert(0, str(_REPO))
+import paths  # noqa: E402
 
 SUBJECTS = ["Perle", "Elgar"]  # Monkey P left, Monkey E right
 SUBJECT_LABELS = {"Perle": "Monkey P", "Elgar": "Monkey E"}
 
 # The style block, the PDF writer and `despine` live in `figures/style.py` and are
-# re-exported here, so every notebook keeps calling `common.set_style()` while there is only
-# one definition of what the style IS. See FORMATTING.md.
+# re-exported here, so notebooks call `common.set_style()` while there is only one
+# definition of what the style IS. See FORMATTING.md.
 from style import despine, save, set_style  # noqa: F401
 
 
@@ -50,7 +46,7 @@ def wrap_pi(x):
 
 def load_ring():
     """The processed ring-task table, all subjects and sessions."""
-    return pd.read_csv(RING_CSV)
+    return pd.read_csv(paths.RING_CSV)
 
 
 def ring_radius(df):
@@ -102,7 +98,7 @@ def prep_2obj(df):
     return d
 
 
-def add_correct(df, threshold=None):
+def add_correct(df, threshold):
     """Add the boolean `correct` column: did the response land on the target?
 
     Two senses of "correct" are available here and they are not quite the same thing.
@@ -118,33 +114,16 @@ def add_correct(df, threshold=None):
       or missed a landing that the offline endpoint places cleanly inside or outside the
       window.
 
-    Passing a `threshold` scores the distance criterion and uses it for `correct`, keeping the
-    recorded reward alongside as `rewarded` and the distance itself as `target_distance` so the
-    two can be compared (see `correct_vs_reward`). `threshold=None` reads the record when it is
-    there and otherwise falls back to `config.REWARD_THRESHOLD`, warning that it did.
+    This scores the distance criterion and uses it for `correct`, keeping the recorded reward
+    alongside as `rewarded` and the distance itself as `target_distance` so the two can be
+    compared (see `correct_vs_reward`).
 
     The two labels agree on ~99% of the trials any figure here plots, and the disagreements are
     trials that sit within a hair of the boundary either way, so nothing that depends on the
     overall shape of the response distribution turns on the choice.
     """
     d = df.copy()
-    recorded = d["correct"].astype(bool) if "correct" in d else None
-
-    if threshold is None:
-        if recorded is not None:
-            d["correct"] = recorded
-            return d
-        # No recorded reward in this table — reconstruct it, and say so, because the distance
-        # criterion is not the same label (see the note above).
-        warnings.warn(
-            "ring.csv has no `correct` column, so reward is being reconstructed from a "
-            "distance threshold, which does not reproduce it exactly. Run "
-            "`python behavior_processing/run_cache_data.py` to rebuild ring.csv with the "
-            "recorded reward.",
-            RuntimeWarning,
-        )
-        threshold = config.REWARD_THRESHOLD
-
+    recorded = d["correct"].astype(bool)
     cued = d["target_object_index"].fillna(0).astype(int).values
     r = np.where(cued == 0, d["object_0_r"].values, d["object_1_r"].values)
     theta = np.where(
@@ -158,15 +137,14 @@ def add_correct(df, threshold=None):
     )
     d["target_distance"] = np.hypot(dx, dy)
     d["correct"] = d["target_distance"].values < threshold
-    if recorded is not None:
-        d["rewarded"] = recorded
+    d["rewarded"] = recorded
     return d
 
 
 def correct_vs_reward(df):
     """How far the post-hoc `correct` label and the online `rewarded` record agree.
 
-    Both columns come from `add_correct(..., threshold=...)`. Returns `(n, agreement,
+    Both columns come from `add_correct`. Returns `(n, agreement,
     correct_only, rewarded_only)`: trials compared, the fraction on which the two labels
     match, and the two directions of disagreement — scored correct but not rewarded (the
     online detection missed a landing that was in fact on target), and rewarded but not scored

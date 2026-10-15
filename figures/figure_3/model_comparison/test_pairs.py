@@ -9,17 +9,16 @@ Five groups, in the order a failure would matter:
    is built on it — it is what removes the phase sweep — so it is checked to machine precision.
 2. **The estimator.** IRLS against a brute-force phase sweep: same phase, and a likelihood at
    least as high. If this fails the closed-form fit is finding the wrong optimum.
-3. **The null.** Shuffled firing rates must give a held-out delta log-likelihood that is not
-   **positive**. This is the leak test, and the direction is the whole point: a fold leak
-   inflates it above zero, and nothing else in the pipeline would reveal that. It should land
-   slightly *below* zero — two fitted parameters scored out of sample cost a little when there
-   is no signal to find — and that small negative offset is measured here rather than assumed,
-   because it is the floor against which a real neuron's dLL has to be read.
+3. **The null.** On shuffled firing rates the Wald test of a determinable phase
+   (:func:`pairs_lib.wald_p`, on the trial bootstrap of :func:`pairs_lib.fit_neuron`) must not
+   reject more often than its nominal level. A bootstrap that understated the spread — say by
+   resampling comparisons instead of trials — would make it reject far too often, and every
+   neuron would then look as if it had a phase.
 4. **Recovery.** Simulated retinotopic and relational neurons, on the real stimulus
-   distribution with its 80 deg exclusion, must be won by their own model — and the fitted
-   phase must match the phase they were built with.
+   distribution with its 80 deg exclusion, must have a determinable phase under their own
+   model, and the fitted phase must match the phase they were built with.
 5. **Choices that should not matter.** The weight floor and the comparison cap are there for
-   memory and speed; they are checked to move the statistics in the third decimal or beyond.
+   memory and speed; they are checked to move the fitted phase by a fraction of a degree.
 """
 
 import argparse
@@ -103,78 +102,54 @@ def test_irls_matches_sweep():
     )
 
 
-# ── 3. The null, and the leak it would reveal ────────────────────────────────
-def test_null_is_zero(n_rep=12):
+# ── 3. The null ───────────────────────────────────────────────────────────────
+def test_null_rejects_at_nominal_rate(n_rep=20, alpha=0.05):
     rng = np.random.default_rng(2)
     x, y = stimuli(220, rng)
-    vals = {k: [] for k in pairs.MODELS}
+    p = {name: [] for name in pairs.MODEL_NAME.values()}
     for rep in range(n_rep):
         fr = rng.poisson(rates(x, y, "relational") * 2.0) / 2.0
         fr = rng.permutation(fr)  # rates carry no stimulus information
-        for k in pairs.MODELS:
-            vals[k].append(
-                pairs.cv_delta_ll(
-                    pairs.build_comparisons(x, y, fr, k), seed=rep
-                )
-            )
+        r = pairs.fit_neuron(x, y, fr, seed=rep)
+        for name in p:
+            p[name].append(r[f"{name}_p"])
     ok = True
-    for k in pairs.MODELS:
-        v = np.array(vals[k], float)
-        m, se = float(np.nanmean(v)), float(
-            np.nanstd(v, ddof=1) / np.sqrt(len(v))
-        )
-        # One-sided: positive is a leak. Negative is the out-of-sample cost of two parameters,
-        # and is reported so the size of that floor is on the record.
+    for name, v in p.items():
+        v = np.array(v, float)
+        frac = float(np.mean(v < alpha))
+        # Binomial(20, 0.05) exceeds 3 rejections with probability ~1.6%.
         ok &= _check(
-            f"{pairs.MODEL_NAME[k]:>12}: held-out dLL on shuffled rates "
-            f"{m:+.5f} +/- {se:.5f}  (must not be positive)",
-            m < 3 * se,
-        )
-        ok &= _check(
-            f"{pairs.MODEL_NAME[k]:>12}: that floor is small next to a real effect "
-            f"(|{m:.5f}| < 0.02)",
-            abs(m) < 0.02,
+            f"{name:>12}: Wald test rejects {frac:.0%} of shuffled neurons at "
+            f"p < {alpha} (median p {np.median(v):.2f})",
+            frac <= 0.15,
         )
     return ok
 
 
 # ── 4. Recovery ───────────────────────────────────────────────────────────────
-def test_recovery(n_neurons=8, n_trials=400, verbose=True):
+def test_recovery(n_neurons=8, n_trials=400):
     rng = np.random.default_rng(3)
-    names = ["retinotopic", "relational"]
-    conf = {g: {m: 0 for m in names} for g in names}
-    phase_err = {g: [] for g in names}
-    for gen in names:
+    ok = True
+    for gen in ("retinotopic", "relational"):
+        err, sig = [], []
         for _ in range(n_neurons):
             x, y = stimuli(n_trials, rng)
             truth = rng.uniform(0, 2 * np.pi)
             fr = rng.poisson(rates(x, y, gen, truth) * 2.0) / 2.0
-            dll = {}
-            for k in pairs.MODELS:
-                c = pairs.build_comparisons(x, y, fr, k)
-                dll[pairs.MODEL_NAME[k]] = pairs.cv_delta_ll(c, seed=0)
-                if pairs.MODEL_NAME[k] == gen:
-                    ph, _ = pairs.gamma_to_phase(
-                        pairs.fit_irls(c["w"], c["y"], c["p"], c["q"])
-                    )
-                    phase_err[gen].append(
-                        abs(pairs.wrap_deg(ph - np.degrees(truth)))
-                    )
-            conf[gen][max(dll, key=dll.get)] += 1
-    if verbose:
-        print(
-            "\n  recovery (rows = simulated, columns = winner by held-out dLL):"
-        )
-        print(" " * 16 + "".join(f"{n:>14}" for n in names))
-        for g in names:
-            print(f"    {g:<12}" + "".join(f"{conf[g][m]:>14}" for m in names))
-    ok = True
-    for g in names:
-        frac = conf[g][g] / max(sum(conf[g].values()), 1)
-        ok &= _check(f"{g:>12} recovers itself ({frac:.0%})", frac >= 0.9)
-        med = float(np.median(phase_err[g]))
+            r = pairs.fit_neuron(x, y, fr)
+            err.append(
+                abs(pairs.wrap_deg(r[f"{gen}_phase_deg"] - np.degrees(truth)))
+            )
+            sig.append(r[f"{gen}_p"] < 0.05)
+        frac = float(np.mean(sig))
         ok &= _check(
-            f"{g:>12} phase within 10 deg of truth (median {med:.1f} deg)",
+            f"{gen:>12} has a determinable phase under its own model "
+            f"({frac:.0%})",
+            frac >= 0.9,
+        )
+        med = float(np.median(err))
+        ok &= _check(
+            f"{gen:>12} phase within 10 deg of truth (median {med:.1f} deg)",
             med < 10.0,
         )
     return ok
@@ -232,8 +207,8 @@ def main():
     ok &= test_identity()
     print("\n2. the estimator:")
     ok &= test_irls_matches_sweep()
-    print("\n3. the null — and the fold leak it would expose:")
-    ok &= test_null_is_zero()
+    print("\n3. the null — the phase test on shuffled rates:")
+    ok &= test_null_rejects_at_nominal_rate()
     print("\n4. recovery:")
     ok &= test_recovery(args.n, args.trials)
     print("\n5. knobs that exist for speed, not for the answer:")

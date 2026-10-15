@@ -1,6 +1,6 @@
 """The PSTH figure of `psth.ipynb`: one unit, three rows, three columns.
 
-Each row is a family of stimulus conditions — one object, two objects `sep1_deg` apart, and
+Each row is a family of stimulus conditions — one object, two objects `SEP1_DEG` apart, and
 two objects antipodal — and each column shows the same conditions three ways:
 
 * **Stimuli** — the selected prototypes, as chords on the ring, coloured by mean firing rate.
@@ -25,7 +25,12 @@ from common import circ_dist as _circ_dist
 from common import load_behavior, load_unit, per_trial_mean_fr, smooth
 from matplotlib import pyplot as plt
 from matplotlib.cm import ScalarMappable
-from matplotlib.colors import LinearSegmentedColormap, Normalize
+from matplotlib.colors import (
+    LinearSegmentedColormap,
+    Normalize,
+    hsv_to_rgb,
+    rgb_to_hsv,
+)
 from matplotlib.ticker import MaxNLocator
 
 RING_RADIUS = 0.38  # ring radius of the stimulus schematics (axes span [0, 1])
@@ -36,64 +41,34 @@ STIM_TIME_WINDOW = (
 COOLWARM = plt.cm.coolwarm  # blue = low firing rate, red = high
 
 
-def firing_rate_cmap(value=0.9, saturation=1.0, blend=0.5, skew=0.6):
+def firing_rate_cmap():
     """The colormap every panel's firing rate is drawn in.
 
-    `coolwarm` with two changes. Its hot end is lifted in HSV at constant hue, because every
-    panel's scale runs the whole map and coolwarm's own red is dull at full scale; the lift
-    ramps in over the top `blend` of the map. Then the neutral colour is moved to `skew` of
-    the way up the range, so the lower 60% reads as blue and red is reserved for the top —
-    the extremes are unchanged, only what counts as middling moves.
+    `coolwarm` with two changes. Its hot end is lifted in HSV at constant hue
+    (:func:`boosted_cmap`), because every panel's scale runs the whole map and coolwarm's own
+    red is dull at full scale. Then the neutral colour is moved to 60% of the way up the
+    range, so the lower 60% reads as blue and red is reserved for the top — the extremes are
+    unchanged, only what counts as middling moves.
+
+    The skew **reparameterises position, not colour**: the blue half of the lifted map is
+    stretched over ``[0, 0.6]`` and the red half compressed into ``[0.6, 1]``. Every colour
+    still appears, in the same order, and the two ends are unchanged. Doing it with a
+    two-slope norm instead would have the same effect on the panels but would need every
+    colorbar to know about it too; this way the map itself carries the skew.
 
     The order matters: the lift is defined in the map's own coordinate, so skewing first
     would lift a different amount of red.
     """
-    return skewed_cmap(
-        boosted_cmap(value=value, saturation=saturation, blend=blend), skew
-    )
-
-
-def skewed_cmap(cmap=None, skew=0.5, n=256, name="skewed"):
-    """A colormap whose **neutral colour is moved**, so it is not half blue and half red.
-
-    ``coolwarm``'s pale centre sits at the middle of the map, so with a linear norm it lands
-    halfway between a panel's minimum and maximum rate: half the range is blue and half is
-    red. ``skew`` is where that centre should sit instead, as a fraction of the range —
-    ``skew = 0.65`` puts it 65 % of the way from min to max, so 65 % of the range is blue and
-    the red is reserved for the top 35 %.
-
-    Implemented by **reparameterising position, not colour**: the blue half of the original
-    map is stretched over ``[0, skew]`` and the red half compressed into ``[skew, 1]``. Every
-    colour of the original still appears, in the same order, and the two ends are unchanged —
-    so a panel's extremes are the same red and blue they were, and only what counts as
-    "middling" moves. Doing it with a two-slope norm instead would have the same effect on
-    the panels but would need every colorbar to know about it too; this way the map itself
-    carries the skew and nothing downstream changes.
-
-    ``skew = 0.5`` returns the colormap unchanged.
-    """
-    from matplotlib.colors import LinearSegmentedColormap
-
-    cmap = (
-        COOLWARM
-        if cmap is None
-        else (plt.get_cmap(cmap) if isinstance(cmap, str) else cmap)
-    )
-    if skew is None or abs(skew - 0.5) < 1e-12:
-        return cmap
-    if not 0.0 < skew < 1.0:
-        raise ValueError(f"skew must be strictly between 0 and 1 (got {skew})")
-    t = np.linspace(0.0, 1.0, n)
+    cmap, skew = boosted_cmap(), 0.6
+    t = np.linspace(0.0, 1.0, 256)
     src = np.where(
         t < skew, 0.5 * t / skew, 0.5 + 0.5 * (t - skew) / (1.0 - skew)
     )
-    return LinearSegmentedColormap.from_list(f"{name}_{cmap.name}", cmap(src))
+    return LinearSegmentedColormap.from_list(f"skewed_{cmap.name}", cmap(src))
 
 
-def boosted_cmap(
-    cmap=None, value=1.0, saturation=1.0, blend=0.5, n=256, name="boosted"
-):
-    """A colormap whose hot end is lifted **in HSV, at constant hue**.
+def boosted_cmap():
+    """``coolwarm`` with its hot end lifted **in HSV, at constant hue**.
 
     ``coolwarm`` ends at a dark maroon: in HSV that colour is (h 0.97, s 0.98, v 0.71), and
     it is what every per-panel scale reaches, since each panel runs the whole map whatever
@@ -105,26 +80,15 @@ def boosted_cmap(
 
     ``blend`` is the fraction of the map, measured from the hot end, over which that lift
     ramps in: at ``t = 1`` it is complete, at ``t = 1 - blend`` it is zero, so the midpoint
-    and the cold half are untouched. ``value=None`` returns the colormap unchanged.
+    and the cold half are untouched.
 
-    Copied from ``figure_3/model_comparison/ideal_lib.py`` per ``figures/FORMATTING.md``,
-    so the figures that share this red do not share an import.
+    Figure 4's ``tuning_lib`` builds its colormap from this function too, so the figures
+    share this red.
     """
-    from matplotlib.colors import (
-        LinearSegmentedColormap,
-        hsv_to_rgb,
-        rgb_to_hsv,
-    )
-
-    cmap = (
-        COOLWARM
-        if cmap is None
-        else (plt.get_cmap(cmap) if isinstance(cmap, str) else cmap)
-    )
-    if value is None or blend <= 0:
-        return cmap
+    value, saturation, blend = 0.9, 1.0, 0.5
+    n = 256
     t = np.linspace(0.0, 1.0, n)
-    rgba = cmap(t)
+    rgba = COOLWARM(t)
     hsv = rgb_to_hsv(rgba[:, :3])
     w = np.clip((t - (1.0 - blend)) / blend, 0.0, 1.0)[
         :, None
@@ -134,17 +98,17 @@ def boosted_cmap(
         axis=1,
     )  # same hue, new s and v
     rgba[:, :3] = hsv_to_rgb((1.0 - w) * hsv + w * target)
-    return LinearSegmentedColormap.from_list(f"{name}_{cmap.name}", rgba)
+    return LinearSegmentedColormap.from_list(f"boosted_{COOLWARM.name}", rgba)
 
 
-def prototypes_1obj(n_orient=4, offset_rad=0.0):
+def prototypes_1obj(n_orient, offset_rad):
     """``n_orient`` object angles evenly spaced around the ring, rotated by
     ``offset_rad``. Keyed by orientation index."""
     step = 2 * np.pi / n_orient
     return {i: offset_rad + i * step for i in range(n_orient)}
 
 
-def prototypes_sep(n_orient=4, separation_deg=80, offset_rad=0.0):
+def prototypes_sep(n_orient, separation_deg, offset_rad):
     """``n_orient`` ``separation_deg``-apart (θ0, θ1) pairs, centered on evenly
     spaced orientations and rotated by ``offset_rad``.
 
@@ -158,7 +122,7 @@ def prototypes_sep(n_orient=4, separation_deg=80, offset_rad=0.0):
     return {i: (m - half, m + half) for i, m in enumerate(mids)}
 
 
-def prototypes_180(n_orient=4, offset_rad=0.0):
+def prototypes_180(n_orient, offset_rad):
     """``n_orient`` antipodal (180°-apart) pairs at evenly spaced orientations
     over ``[0, 180)`` (past 180° the unordered pair repeats), rotated by
     ``offset_rad``."""
@@ -344,10 +308,10 @@ def _fr_norm(values):
     return Normalize(np.nanmin(v), np.nanmax(v))
 
 
-def _fr_colors(norm, mean_frs, cmap=COOLWARM, nan_color=(0.7, 0.7, 0.7, 1.0)):
+def _fr_colors(norm, mean_frs, cmap):
     """``{condition: cmap color}`` from ``{condition: mean FR}`` (gray if NaN)."""
     return {
-        k: (cmap(norm(v)) if np.isfinite(v) else nan_color)
+        k: (cmap(norm(v)) if np.isfinite(v) else (0.7, 0.7, 0.7, 1.0))
         for k, v in mean_frs.items()
     }
 
@@ -392,11 +356,7 @@ def draw_chords(
     ax,
     chords,
     radius=RING_RADIUS,
-    front_of="clockwise",
     lw=2.0,
-    dots=False,
-    dot_size=22,
-    z0=2.0,
 ):
     """Draw a family of same-separation chords with *rotationally consistent*
     occlusion.
@@ -423,10 +383,10 @@ def draw_chords(
     can never achieve (the "in front of" relation would have to be a cyclic total
     order).
 
-    ``front_of='clockwise'`` puts the clockwise halves on top (each line in front
-    of its clockwise neighbors); ``'counterclockwise'`` flips it; ``None`` falls
-    back to a plain single-layer draw in list order.
+    The clockwise halves go on top, so each line is in front of its clockwise
+    neighbors.
     """
+    z0 = 2.0
     n = max(len(chords), 1)
     for k, (t0, t1, color) in enumerate(chords):
         x0, y0 = _ring_xy(t0, radius)  # clockwise end
@@ -434,59 +394,26 @@ def draw_chords(
         xm, ym = (x0 + x1) / 2, (y0 + y1) / 2  # chord midpoint
         cw_half = ([xm, x0], [ym, y0])
         ccw_half = ([xm, x1], [ym, y1])
-        if front_of is None:
-            ax.plot(
-                [x0, x1],
-                [y0, y1],
-                color=color,
-                lw=lw,
-                zorder=z0 + k / (n + 1),
-                solid_capstyle="round",
-            )
-        else:
-            fg, bg = (
-                (cw_half, ccw_half)
-                if front_of == "clockwise"
-                else (ccw_half, cw_half)
-            )
-            # A tie-break within each layer keeps degenerate cases (e.g. the 180°
-            # chords, which all cross at the center) from flickering.
-            ax.plot(
-                *bg,
-                color=color,
-                lw=lw,
-                zorder=z0 + k / (n + 1),
-                solid_capstyle="round",
-            )
-            ax.plot(
-                *fg,
-                color=color,
-                lw=lw,
-                zorder=z0 + 1 + k / (n + 1),
-                solid_capstyle="round",
-            )
-        if dots:
-            ax.scatter(
-                [x0, x1],
-                [y0, y1],
-                color=color,
-                s=dot_size,
-                edgecolors="k",
-                linewidths=0.4,
-                zorder=z0 + 2 + k / (n + 1),
-            )
+        fg, bg = cw_half, ccw_half
+        # A tie-break within each layer keeps degenerate cases (e.g. the 180°
+        # chords, which all cross at the center) from flickering.
+        ax.plot(
+            *bg,
+            color=color,
+            lw=lw,
+            zorder=z0 + k / (n + 1),
+            solid_capstyle="round",
+        )
+        ax.plot(
+            *fg,
+            color=color,
+            lw=lw,
+            zorder=z0 + 1 + k / (n + 1),
+            solid_capstyle="round",
+        )
 
 
-def draw_2obj_prototypes(
-    ax,
-    protos,
-    colors,
-    radius=RING_RADIUS,
-    front_of="clockwise",
-    lw=2.0,
-    circle_size=40,
-    circle_lw=0.5,
-):
+def draw_2obj_prototypes(ax, protos, colors, radius=RING_RADIUS):
     """The selected prototype pairs: a chord per pair, coloured by `colors[key]`, with an
     **unfilled** circle at each object.
 
@@ -499,24 +426,21 @@ def draw_2obj_prototypes(
         ax,
         [(t0, t1, colors[key]) for key, (t0, t1) in sorted(protos.items())],
         radius=radius,
-        front_of=front_of,
-        lw=lw,
-        dots=False,
     )
     ends = [t for _, pair in sorted(protos.items()) for t in pair]
     xs, ys = zip(*(_ring_xy(t, radius) for t in ends))
     ax.scatter(
         xs,
         ys,
-        s=circle_size,
+        s=40,
         facecolors="none",
         edgecolors="k",
-        linewidths=circle_lw,
+        linewidths=0.5,
         zorder=6,
     )
 
 
-def draw_1obj_prototypes(ax, protos, colors, radius=RING_RADIUS, size=48):
+def draw_1obj_prototypes(ax, protos, colors, radius):
     """Selected prototype object positions colored by ``colors[key]``."""
     _prep_stim_ax(ax, radius)
     for key, t in protos.items():
@@ -525,7 +449,7 @@ def draw_1obj_prototypes(ax, protos, colors, radius=RING_RADIUS, size=48):
             x,
             y,
             color=colors[key],
-            s=size,
+            s=44,
             edgecolors="k",
             linewidths=0.4,
             zorder=3,
@@ -540,7 +464,6 @@ def draw_dense_2obj(
     norm,
     radius=RING_RADIUS,
     cmap=COOLWARM,
-    front_of="clockwise",
     lw=1.3,
 ):
     """The dense family of `separation_deg`-apart chords, centred at `phis` and coloured by
@@ -559,9 +482,7 @@ def draw_dense_2obj(
         )
         for phi, fr in zip(phis, mean_frs)
     ]
-    draw_chords(
-        ax, chords, radius=radius, front_of=front_of, lw=lw, dots=False
-    )
+    draw_chords(ax, chords, radius=radius, lw=lw)
 
 
 def draw_1obj_annulus(
@@ -600,13 +521,11 @@ def plot_psth(
     trials,
     trials_per_condition,
     colors,
-    show_band=True,
-    band_alpha_frac=0.5,
-    smooth_half_win_ms=50,
-    lw=1.4,
+    smooth_half_win_ms,
+    lw,
 ):
     """One PSTH line per condition, colored by ``colors[condition]``, with a ±sem
-    band at ``band_alpha_frac`` of the line's opacity. Returns max y."""
+    band at half the line's opacity. Returns max y."""
     y_max = 0.0
     for cond, cond_trials in trials_per_condition.items():
         time, mean, sem = psth_curve(
@@ -615,18 +534,23 @@ def plot_psth(
         if not len(time):
             continue
         c = colors[cond]
-        if show_band:
-            ax.fill_between(
-                time,
-                mean - sem,
-                mean + sem,
-                color=(c[0], c[1], c[2], c[3] * band_alpha_frac),
-                lw=0,
-                zorder=2,
-            )
+        ax.fill_between(
+            time,
+            mean - sem,
+            mean + sem,
+            color=(c[0], c[1], c[2], c[3] * 0.5),
+            lw=0,
+            zorder=2,
+        )
         ax.plot(time, mean, color=c, lw=lw, zorder=3)
         y_max = max(y_max, float((mean + sem).max()))
     return y_max
+
+
+#: The binning of :func:`build_rows`, shared by figure 2, figure 4's rings and supp figure 10.
+SEP1_DEG = 90  # inter-object angle of the middle row
+N_DENSE = 18  # orientations in the 2-object tuning panels
+N_DENSE_1OBJ = 180  # resolution of the 1-object annulus
 
 
 def build_rows(
@@ -634,26 +558,21 @@ def build_rows(
     session,
     unit_id,
     orientation_deg=0.0,
-    sep1_deg=90,
     similarity_window_deg=15.0,
-    fr_window=FR_WINDOW,
     smooth_half_win_ms=250.0,
-    n_dense=18,
-    n_dense_1obj=180,
     n_proto=4,
     share_2obj_color_scale=True,
     cmap=COOLWARM,
-    verbose=True,
 ):
     """Load a unit and prepare the figure's three rows.
 
-    Row 1 is `n_proto` 1-object positions, row 2 is `n_proto` prototypes `sep1_deg` apart,
+    Row 1 is `n_proto` 1-object positions, row 2 is `n_proto` prototypes `SEP1_DEG` apart,
     row 3 is `n_proto` antipodal ones. All three sets — and the dense tuning of the right
     column — are rotated by `orientation_deg`, so the conditions can be lined up with this
     unit's receptive field.
 
     The colour of a condition, in all three columns, is its mean firing rate over
-    `fr_window` (ms after stimulus onset), which defaults to stimulus + delay and so excludes
+    `FR_WINDOW` (ms after stimulus onset), stimulus + delay, which excludes
     the response. The PSTH traces themselves always span `STIM_TIME_WINDOW`.
 
     With `share_2obj_color_scale` the two 2-object rows share one firing-rate range spanning
@@ -671,39 +590,38 @@ def build_rows(
         len(behavior_2obj) > 0
     ), f"no 2-object ring behavior for {subject} {session}"
     spike_counts, trials, quality_label = load_unit(subject, session, unit_id)
-    if verbose:
-        print(
-            f"{subject} {session}: {len(behavior_2obj)} 2-obj + {len(behavior_1obj)} "
-            f"1-obj trials | unit {unit_id} @ {quality_label} "
-            f"({len(trials)} trials with spikes) | prototypes at {orientation_deg:g}°"
-        )
+    print(
+        f"{subject} {session}: {len(behavior_2obj)} 2-obj + {len(behavior_1obj)} "
+        f"1-obj trials | unit {unit_id} @ {quality_label} "
+        f"({len(trials)} trials with spikes) | prototypes at {orientation_deg:g}°"
+    )
 
     window_rad = np.radians(similarity_window_deg)
     offset = np.radians(orientation_deg)
     sel_1obj = prototypes_1obj(n_proto, offset_rad=offset)
-    sel_sep1 = prototypes_sep(n_proto, sep1_deg, offset_rad=offset)
+    sel_sep1 = prototypes_sep(n_proto, SEP1_DEG, offset_rad=offset)
     sel_180 = prototypes_180(n_proto, offset_rad=offset)
 
     dense = dict(
         window_rad=window_rad,
         offset_rad=offset,
-        fr_window=fr_window,
+        fr_window=FR_WINDOW,
         smooth_half_win_ms=smooth_half_win_ms,
     )
     phis_s1, fr_s1 = dense_2obj_tuning(
-        behavior_2obj, spike_counts, trials, sep1_deg, n_dense, **dense
+        behavior_2obj, spike_counts, trials, SEP1_DEG, N_DENSE, **dense
     )
     phis_180, fr_180 = dense_2obj_tuning(
         behavior_2obj,
         spike_counts,
         trials,
         180,
-        n_dense,
+        N_DENSE,
         orient_span=np.pi,
         **dense,
     )
     phis_1obj, fr_1obj = dense_1obj_tuning(
-        behavior_1obj, spike_counts, trials, n_dense_1obj, **dense
+        behavior_1obj, spike_counts, trials, N_DENSE_1OBJ, **dense
     )
 
     if share_2obj_color_scale:
@@ -724,11 +642,11 @@ def build_rows(
             _fr_norm(fr_1obj),
         ),
         (
-            f"{sep1_deg:g}° apart",
+            f"{SEP1_DEG:g}° apart",
             sel_sep1,
             window_trials_2obj(behavior_2obj, sel_sep1, window_rad),
             "chord",
-            sep1_deg,
+            SEP1_DEG,
             phis_s1,
             fr_s1,
             norm_s1,
@@ -748,7 +666,7 @@ def build_rows(
             spike_counts,
             trials,
             tpc,
-            window=fr_window,
+            window=FR_WINDOW,
             smooth_half_win_ms=smooth_half_win_ms,
         )
         rows.append(
@@ -767,17 +685,7 @@ def build_rows(
     return spike_counts, trials, rows
 
 
-def layout_columns(
-    fig,
-    axes,
-    caxes,
-    psth_col=1,
-    stim_gap_in=0.06,
-    tuning_gap_in=0.10,
-    cbar_gap_in=0.10,
-    cbar_width_in=0.10,
-    margin_in=0.02,
-):
+def layout_columns(fig, axes, caxes):
     """Lay the columns out horizontally by hand, in inches.
 
     Each row is packed as::
@@ -788,12 +696,16 @@ def layout_columns(
     The two stimulus panels are **squares whose side equals the height of that
     row's PSTH axes** (so their size is set by the vertical layout), the colorbar
     is ``cbar_width_in`` wide and spans the PSTH axes' height, and the PSTH axes
-    absorb whatever width is left over. The ``*_gap_in`` knobs therefore control
-    the white space around the stimulus/tuning panels directly, in inches.
+    absorb whatever width is left over. The ``*_gap_in`` values therefore set the
+    white space around the stimulus/tuning panels directly, in inches.
 
     Call after the layout engine has run, since only then are the vertical
     positions and the label extents final.
     """
+    psth_col = 1
+    stim_gap_in, tuning_gap_in = 0.06, 0.10
+    cbar_gap_in, cbar_width_in = 0.10, 0.10
+    margin_in = 0.02
     n_rows = axes.shape[0]
     # Measure label/tick overhang with the column titles hidden — a title wider
     # than its axes would otherwise inflate the tight bbox horizontally.
@@ -878,12 +790,11 @@ def plot_rows(
     spike_counts,
     trials,
     rows,
-    figsize=(6.0, 4.5),
-    dpi=300,
-    cmap=COOLWARM,
-    smooth_half_win_ms=250.0,
-    response_time_ms=None,
-    column_titles=("Stimuli", "PSTH", "Tuning"),
+    *,
+    figsize,
+    cmap,
+    smooth_half_win_ms,
+    response_time_ms,
 ):
     """Draw the 3x3 figure, plus a colorbar column: stimuli | PSTHs | dense tuning.
 
@@ -898,11 +809,11 @@ def plot_rows(
     # (0.5 reaches the panel edge); the column gaps are in inches, because the panels are
     # squares pinned to the PSTH height and the gaps set the space around them directly.
     STIM_RADIUS, TUNING_RADIUS = 0.4, 0.43
-    STIM_LW, DENSE_LW, PSTH_LW = 2.0, 1.5, 1.2
+    DENSE_LW, PSTH_LW = 1.5, 1.2
     EVENT_TIMES_MS = (0, 1000, 2000)  # stimulus, delay and cue onset
 
     n_rows = len(rows)
-    fig = plt.figure(figsize=figsize, dpi=dpi)
+    fig = plt.figure(figsize=figsize, dpi=300)
     gs = fig.add_gridspec(n_rows, 4, width_ratios=(1, 3, 1, 0.1))
     axes = np.array(
         [[fig.add_subplot(gs[r, c]) for c in range(3)] for r in range(n_rows)]
@@ -918,7 +829,6 @@ def plot_rows(
                 row["protos"],
                 row["colors"],
                 radius=STIM_RADIUS,
-                lw=STIM_LW,
             )
         else:
             draw_1obj_prototypes(
@@ -926,7 +836,6 @@ def plot_rows(
                 row["protos"],
                 row["colors"],
                 radius=STIM_RADIUS,
-                size=44,
             )
         axes[r, 0].set_ylabel(row["label"])
 
@@ -980,7 +889,7 @@ def plot_rows(
             "Mean FR (Hz)", fontsize=12
         )  # FORMATTING.md: nothing below 12 pt
 
-    for col, text in enumerate(column_titles):
+    for col, text in enumerate(("Stimuli", "PSTH", "Tuning")):
         axes[0, col].set_title(text)
 
     y_2obj = max(
@@ -998,7 +907,7 @@ def plot_rows(
             linestyles="dashed",
             linewidth=0.7,
         )
-        if response_time_ms is not None and np.isfinite(response_time_ms):
+        if np.isfinite(response_time_ms):
             ax.vlines(
                 [response_time_ms],
                 0,
@@ -1026,40 +935,29 @@ def psth_figure(
     session,
     unit_id,
     orientation_deg=0.0,
-    sep1_deg=90,
     similarity_window_deg=15.0,
-    fr_window=FR_WINDOW,
     smooth_half_win_ms=250.0,
-    n_dense=18,
-    n_dense_1obj=180,
     n_proto=4,
     share_2obj_color_scale=True,
-    cmap=None,
     figsize=(6.0, 4.5),
-    verbose=True,
 ):
     """The whole figure for one unit: :func:`build_rows` then :func:`plot_rows`.
 
     The PSTHs also get a dashed line at the **mean response time of the trials this figure
     draws** — pooled over every condition of every row, so the line describes the panel
-    rather than the session.
+    rather than the session. Drawn in :func:`firing_rate_cmap`.
     """
-    cmap = firing_rate_cmap() if cmap is None else cmap
+    cmap = firing_rate_cmap()
     spike_counts, trials, rows = build_rows(
         subject,
         session,
         unit_id,
         orientation_deg=orientation_deg,
-        sep1_deg=sep1_deg,
         similarity_window_deg=similarity_window_deg,
-        fr_window=fr_window,
         smooth_half_win_ms=smooth_half_win_ms,
-        n_dense=n_dense,
-        n_dense_1obj=n_dense_1obj,
         n_proto=n_proto,
         share_2obj_color_scale=share_2obj_color_scale,
         cmap=cmap,
-        verbose=verbose,
     )
     drawn = {
         t
@@ -1070,8 +968,7 @@ def psth_figure(
     response_ms = common.mean_response_time_ms(
         common.load_behavior(subject, session), drawn
     )
-    if verbose:
-        print(f"mean response time {response_ms:.0f} ms after stimulus onset")
+    print(f"mean response time {response_ms:.0f} ms after stimulus onset")
     return plot_rows(
         spike_counts,
         trials,

@@ -6,7 +6,7 @@ per-neuron model fits that `run_cache.py` built — and the three that draw **po
 results (`figure_model_comparison`, `figure_relationality`, `figure_ks_stats`) all begin the
 same way: load the fits and restrict them to the models the figure compares. That opening is
 here so it is written once and every panel is guaranteed to be about the same neurons. The
-remaining two (`figure_tuning`, `tuning_plots`) draw a single neuron and select nothing.
+remaining two (`figure_example_neurons`, `figure_example_model_neurons`) draw single neurons.
 
 Refitting takes hours, so `run_cache.py` is incremental: it tops up the models missing from
 `cache/figures/figure_4/neuron_models/` and leaves the rest alone. Deleting the cache to
@@ -17,39 +17,24 @@ non-deterministic.
 import sys
 from pathlib import Path
 
-from matplotlib import pyplot as plt
-
-# The shared neuron-inclusion criterion and the east-west antipodal exclusion both live one
-# level up, in `figures/`. The exclusion is applied to every 2-object analysis here
-# without exception; see ../trial_filters.py.
+# The shared neuron-inclusion criterion, the style block and the east-west antipodal
+# exclusion live one level up, in `figures/`.
 _FIGURES = Path(__file__).resolve().parent.parent
 if str(_FIGURES) not in sys.path:
     sys.path.insert(0, str(_FIGURES))
-import config  # noqa: E402  the one place selection criteria are set
 
-# The style block, the PDF writer and `despine` live in `figures/style.py` and are
-# re-exported here, so every notebook keeps calling `common.set_style()` while there is only
-# one definition of what the style IS. See FORMATTING.md.
-from style import despine, save, set_style  # noqa: F401
+# The style block and the PDF writer live in `figures/style.py` and are re-exported here, so
+# every notebook calls `common.set_style()` while there is only one definition of what the
+# style IS. See FORMATTING.md.
+from style import save, set_style  # noqa: E402,F401
 
-# Re-exported, not merely imported: `data_lib` and the notebooks reach the east-west
-# antipodal exclusion through this module, so removing these names breaks them. It is applied
-# to every 2-object analysis here without exception; see ../trial_filters.py.
-from trial_filters import (  # noqa: E402,F401
-    drop_east_west,
-    drop_east_west_arrays,
-    east_west_mask,
-)
+# Cache paths, subject names and the angle helpers are not declared here: `data_lib` owns
+# them and every caller reaches them as `dl.`.
 
-# Cache paths, subject names and the angle helpers are NOT re-declared here. `data_lib` owns
-# them, every caller reaches them as `dl.`, and the copy this module used to keep was both
-# unused and subtly wrong — it built its paths from a *relative* root, so it would have
-# resolved somewhere else the moment anything ran from another directory.
-
-# Every figure here now draws the SAME population — the neurons that pass the shared
-# 2-object modulation criterion of `figures/neuron_selection.py`. The model set still
-# differs between figures (it is the comparison each one makes), but it no longer changes
-# who is included, because selection no longer depends on the models.
+# Every figure here draws the SAME population: the neurons that pass the shared 2-object
+# modulation criterion of `figures/neuron_selection.py`. The model set differs between
+# figures (it is the comparison each one makes), but it does not change who is included,
+# because selection does not depend on the models.
 
 
 def selected_fits(models, verbose=True):
@@ -68,9 +53,6 @@ def selected_fits(models, verbose=True):
     2. **restrict to `models`**, recomputing which model wins within that set. ``best_model``
        as cached is the argmax over every model that was fit, so a figure drawn over a
        subset while reading that column would count neurons whose winner is not on its axis.
-
-    An earlier version cut neurons by their best model's held-out ΔLL. That is gone: it
-    selected the population by the very fits the figures then compare.
     """
     import fit_lib
     import neuron_selection

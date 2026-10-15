@@ -1,24 +1,21 @@
 # Formatting conventions for every figure in `figures/`
 
-Note-to-self (and to future notebooks): **all** figure-generating notebooks under
-`figures/` follow the rules below. Copy the style block verbatim into each new
-notebook.
+All figure-generating notebooks under `figures/` follow the rules below.
 
-## Style block (put it in the imports cell of every notebook)
+## Style
+
+The style lives in one place, `figures/style.py`, and each figure directory's `common.py`
+re-exports it. Every notebook calls it in its first cell:
 
 ```python
-import matplotlib.pyplot as plt
-
-plt.rcParams['font.family'] = 'sans-serif'
-plt.rcParams['font.sans-serif'] = ['Arial']
-plt.rcParams['axes.titlesize'] = 14
-plt.rcParams['axes.labelsize'] = 12
-plt.rcParams['xtick.labelsize'] = 12
-plt.rcParams['ytick.labelsize'] = 12
-plt.rcParams['legend.fontsize'] = 12     # legend entries at 12 pt
-plt.rcParams['figure.dpi'] = 300
-plt.rcParams['pdf.fonttype'] = 42        # keep PDF text editable in Illustrator
+import common
+common.set_style()
 ```
+
+`set_style()` sets Arial, 14 pt titles, 12 pt labels, ticks and legends, 300 dpi, and
+`pdf.fonttype = 42` (PDF text stays editable in Illustrator). It also calls
+`config.reload()`, so re-running the first cell picks up an edit to `figures/config.py`
+without restarting the kernel.
 
 **No font size below 12 pt, anywhere.** That includes text drawn inside axes (trial
 counts, annotations, in-panel labels), tick labels, and anything passed an explicit
@@ -26,8 +23,8 @@ counts, annotations, in-panel labels), tick labels, and anything passed an expli
 don't shrink the text.
 
 If a plot uses seaborn, call `sns.despine(...)` only — **do not** use
-`sns.set_theme(...)`, which silently overrides the rcParams above (or re-apply the
-block after it).
+`sns.set_theme(...)`, which silently overrides the rcParams set by `set_style()` (or call
+`set_style()` again after it).
 
 ## Despine
 
@@ -35,7 +32,7 @@ block after it).
 histograms: no top or right spine, keep left and bottom.
 
 ```python
-ax.spines['top'].set_visible(False); ax.spines['right'].set_visible(False)
+style.despine(ax)           # figures/style.py; some `common.py` files re-export it
 # or, with seaborn imported: sns.despine(fig)
 ```
 
@@ -49,7 +46,7 @@ Every generated figure is saved as a **PDF next to the notebook that made it**, 
 descriptive file name, overwriting any previous version:
 
 ```python
-fig.savefig('my_figure.pdf', bbox_inches='tight', pad_inches=0.01)
+common.save(fig, 'my_figure.pdf')   # savefig(..., bbox_inches='tight', pad_inches=0.01)
 ```
 
 ## Figure size
@@ -58,18 +55,23 @@ Each notebook exposes the figure size(s) as a **parameter in a CONFIG cell at th
 (e.g. `FIGSIZE = (4.2, 4.6)`), one per generated figure, so the size can be retuned
 without touching plotting code.
 
-## Self-containedness
+## Code organisation
 
-Notebooks in `figures/` do **not** import library code from
-`new_exploration/paper_draft_0/`. Anything shared lives in a `*.py` file in the same
-directory as the notebook that uses it (copied/adapted as needed).
+- Each figure directory has a `common.py` (style, cache locations, shared constants) and,
+  where needed, `*_lib.py` modules next to the notebooks that use them.
+- Code used by several figures lives directly in `figures/`: `style.py`, `config.py`
+  (every neuron and trial selection threshold), `neuron_selection.py`, `trial_filters.py`
+  and `firing_rates.py`. Figure directories import these by putting `figures/` on
+  `sys.path`.
+- A figure may also import another figure's library rather than copying it (for example,
+  supplementary figures 1, 2 and 9 build on `figure_3/model_comparison/` and `figure_4/`).
 
 ## Paths / kernels
 
-Notebooks compute paths relative to the paper root
-(`figures/figure_<n>/<sub>/` is three levels down, so `'../../../cache/...'`).
+Every shared location comes from `paths.py` in the repository root; never write a `../`
+path. A notebook that needs one finds `paths.py` by walking up from its folder (see the
+`paths.py` docstring for the four lines), then uses e.g. `paths.RING_CSV` or
+`paths.FIGURES / 'figure_3'`. Figures are saved next to the notebook by bare file name.
 
-- Notebooks that only need numpy/pandas/scipy/matplotlib/seaborn run on the
-  **Python (base)** kernel (`/opt/miniconda3/bin/python`).
-- Notebooks that render task frames need `moog` + `pynwb` → **Python (wm_paper)**
-  kernel (`/opt/miniconda3/envs/wm_paper/bin/python`).
+Every notebook runs on a Python env with `requirements.txt` installed. Only the notebooks that
+render task frames need `moog-games`.

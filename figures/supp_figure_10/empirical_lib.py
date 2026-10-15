@@ -5,11 +5,14 @@ objects were both within 15° of their prototype slot** (`psth_lib.window_trials
 `psth_lib._dist_2obj` for the matching rule). The prototype is therefore a label for a small
 cloud of real stimuli, not a stimulus that was ever shown on its own.
 
-This module redraws the two 2-object stimulus panels -- the `sep1_deg`-apart row and the
+This module redraws the two 2-object stimulus panels -- the `psth_lib.SEP1_DEG`-apart row and the
 180°-apart row -- **unchanged except that each chord's endpoints are the circular means of the
-objects in the trials that chord averaged**. Same four chords, same firing-rate colours, same
-colour scale, drawn by figure 2's own `draw_2obj_prototypes`; only the positions move. What the
-figure shows is how far the labels sit from the stimuli they name.
+objects in the trials that chord averaged**. Same four chords, same firing rates, same colour
+scale, drawn by figure 2's own `draw_2obj_prototypes`; the chords move to the empirical
+positions. What the figure shows is how far the labels sit from the stimuli they name. (The
+panels here use `psth_lib.build_rows`'s default colormap, plain `coolwarm`, and
+`draw_2obj_prototypes`'s default ring radius, `psth_lib.RING_RADIUS`; figure 2 draws its
+stimulus panels in `psth_lib.firing_rate_cmap()` at radius 0.4.)
 
 Two details decide whether the means are right.
 
@@ -31,6 +34,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 from matplotlib import pyplot as plt
+from matplotlib.cm import ScalarMappable
 
 # `figure_2` on the path, resolved from THIS FILE. Note there is deliberately no `common.py`
 # in this directory: `psth_lib` does `from common import ...`, and a local one would shadow
@@ -125,54 +129,37 @@ def empirical_stimulus_figure(
     session,
     unit_id,
     orientation_deg=0.0,
-    sep1_deg=90,
     similarity_window_deg=15.0,
     n_proto=4,
     share_2obj_color_scale=True,
-    fr_window=(0, 2000),
     smooth_half_win_ms=250.0,
-    n_dense=18,
     panel_in=1.25,
     margin=(0.30, 0.45),
-    cbar=True,
-    cbar_width_in=0.10,
-    cbar_gap_in=0.12,
-    show_prototypes=False,
-    verbose=True,
 ):
     """The two 2-object stimulus panels of `figure_2/psth.ipynb`, with empirical endpoints.
 
     Every argument that also exists in `psth_lib.build_rows` is passed straight through, so
-    setting them to `psth.ipynb`'s values reproduces that figure's panels exactly -- colours,
-    colour scale and all -- and the only difference is where the chords sit.
-
-    ``show_prototypes`` additionally ghosts the nominal positions underneath in grey, for
-    checking; the figure is about the empirical ones and it is off by default.
+    setting them to `psth.ipynb`'s values reproduces that figure's conditions, firing rates
+    and colour scale. The panels are drawn in `build_rows`'s default colormap (`coolwarm`),
+    with a colour bar per panel, or one for both when they share a scale.
 
     Returns ``(fig, axes, table)``.
     """
     b2 = pl.load_behavior(subject, session, num_objects=2)
-    _sc, _tr, rows = pl.build_rows(
+    _, _, rows = pl.build_rows(
         subject,
         session,
         unit_id,
         orientation_deg=orientation_deg,
-        sep1_deg=sep1_deg,
         similarity_window_deg=similarity_window_deg,
-        fr_window=fr_window,
         smooth_half_win_ms=smooth_half_win_ms,
-        n_dense=n_dense,
         n_proto=n_proto,
         share_2obj_color_scale=share_2obj_color_scale,
-        verbose=verbose,
     )
     two = [r for r in rows if r["kind"] == "chord"]
 
-    fig_w = (
-        panel_in
-        + margin[0]
-        + (cbar_gap_in + cbar_width_in + 0.45 if cbar else 0.0)
-    )
+    cbar_gap_in, cbar_width_in = 0.12, 0.10
+    fig_w = panel_in + margin[0] + cbar_gap_in + cbar_width_in + 0.45
     fig_h = panel_in * len(two) + margin[1]
     fig, axes = plt.subplots(
         len(two),
@@ -186,9 +173,6 @@ def empirical_stimulus_figure(
     tables = []
     for ax, row in zip(axes, two):
         emp = empirical_protos(b2, row["protos"], row["trials_per_condition"])
-        if show_prototypes:
-            ghost = {k: (0.75, 0.75, 0.75, 1.0) for k in row["protos"]}
-            pl.draw_2obj_prototypes(ax, row["protos"], ghost)
         pl.draw_2obj_prototypes(ax, emp, row["colors"])
         ax.set_title(row["label"])
         tables.append(
@@ -197,13 +181,11 @@ def empirical_stimulus_figure(
             )
         )
 
-    if cbar and len(two):
+    if len(two):
         # One bar for both panels when they share a scale, which is what makes their colours
         # comparable; otherwise one per panel, since each is then its own range.
-        import matplotlib as mpl
-
         if share_2obj_color_scale:
-            sm = mpl.cm.ScalarMappable(norm=two[0]["norm"], cmap=pl.COOLWARM)
+            sm = ScalarMappable(norm=two[0]["norm"], cmap=pl.COOLWARM)
             fig.colorbar(
                 sm,
                 ax=list(axes),
@@ -213,7 +195,7 @@ def empirical_stimulus_figure(
             )
         else:
             for ax, row in zip(axes, two):
-                sm = mpl.cm.ScalarMappable(norm=row["norm"], cmap=pl.COOLWARM)
+                sm = ScalarMappable(norm=row["norm"], cmap=pl.COOLWARM)
                 fig.colorbar(
                     sm,
                     ax=ax,

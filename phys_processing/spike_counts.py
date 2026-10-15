@@ -18,6 +18,7 @@ Usage:
 """
 
 import functools
+import sys
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -25,9 +26,15 @@ import numpy as np
 import pandas as pd
 from pynwb import NWBHDF5IO
 
-_ROOT = Path(__file__).resolve().parent.parent
-SPIKESORTING_DIR = _ROOT / "cache/dandi_data/spikesorting"
-RING_PATH = _ROOT / "cache/behavior_processing/ring.csv"
+_REPO = (
+    Path(__file__).resolve().parents[1]
+)  # repository root, where paths.py lives
+if str(_REPO) not in sys.path:
+    sys.path.insert(0, str(_REPO))
+import paths  # noqa: E402
+
+SPIKESORTING_DIR = paths.SPIKESORTING_NWB
+RING_PATH = paths.RING_CSV
 
 BIN_MS = 10  # Width of a spike-count bin
 LEAD_IN_MS = 200  # Counts start this long before stimulus onset

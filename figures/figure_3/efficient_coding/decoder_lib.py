@@ -5,18 +5,13 @@ neurons into a simulated population — a kernel-regression response table per u
 with random receptive-field rotations and read out under independent Poisson noise — and trains
 an MLP to recover the two stimulus angles from it.
 
-Consolidated from the former `neural_lib.py` and `task_lib.py`, which were vendored wholesale
-from the superseded figure and carried 27 definitions of which 16 were reachable: the rest were
-that figure's wedge-selection and plotting machinery, including a parallel neuron-selection layer
-(`population_units`) that duplicated `selection_lib`'s job and was never called here.
-
 The two halves, in order:
 
 * **response tables** — `precompute_unit_tables` builds one `[n_grid, n_grid]` table of mean rate
   over the (theta0, theta1) grid per unit, which is the only expensive step;
-  `subsample_pool_positions` and `sample_bootstrap_table_inputs` draw a simulated population from
-  them, and `make_table_neural_fn` turns that into the `(theta0, theta1) -> rates` closure the
-  task wants. Rotating a unit by `k` grid steps is a diagonal shift of its table, so the rotation
+  `sample_bootstrap_table_inputs` draws a simulated population from them, and
+  `make_table_neural_fn` turns that into the `(theta0, theta1) -> rates` closure the task
+  wants. Rotating a unit by `k` grid steps is a diagonal shift of its table, so the rotation
   replicas cost a re-index rather than a re-fit.
 * **the task** — `stimulus_grid`, `sample_stimuli` and `target_bump` define what is decoded;
   `StimulusRepresentationModel`, `train_model` and `evaluate_error` are the read-out, trained on
@@ -26,7 +21,6 @@ The two halves, in order:
 import numpy as np
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from scipy.signal import find_peaks
 
 
@@ -51,7 +45,7 @@ def _bump_weights_2obj(t0, t1, query_t0, query_t1, sigma_deg):
     return w / w.sum(axis=1, keepdims=True)
 
 
-def precompute_unit_tables(units_2obj_trials, sample_sigma_deg, n_grid=72):
+def precompute_unit_tables(units_2obj_trials, sample_sigma_deg, n_grid):
     """One kernel-regression response table per unit over the `n_grid × n_grid` `(θ0, θ1)`
     grid: `[n_units, n_grid, n_grid]` float32.
 
@@ -71,40 +65,26 @@ def precompute_unit_tables(units_2obj_trials, sample_sigma_deg, n_grid=72):
     return tables
 
 
-def subsample_pool_positions(pool_positions, n_units, rng):
-    """`n_units` **distinct** positions drawn without replacement — the neuron-count control.
-    Raises if the pool is smaller, so the caller can skip
-    that sweep point."""
-    pool_positions = np.asarray(pool_positions)
-    if len(pool_positions) < n_units:
-        raise ValueError(
-            f"pool has {len(pool_positions)} units < n_units={n_units}"
-        )
-    return rng.choice(pool_positions, size=n_units, replace=False)
-
-
 def sample_bootstrap_table_inputs(pool_positions, n_samples, n_grid, rng):
     """Draw `n_samples` bootstrap inputs: a unit picked **with replacement** from
     `pool_positions` plus an orientation drawn uniformly on [0, 2π) and snapped to the grid.
-    Returns `(unit_rows, shifts, offsets)`."""
+    Returns `(unit_rows, shifts)`."""
     idx = rng.integers(0, len(pool_positions), size=n_samples)
     unit_rows = np.asarray(pool_positions)[idx]
     offsets = rng.uniform(0.0, 2 * np.pi, size=n_samples)
     shifts = np.round(offsets / (2 * np.pi / n_grid)).astype(int) % n_grid
-    return unit_rows, shifts, offsets
+    return unit_rows, shifts
 
 
-def make_table_neural_fn(
-    tables, unit_rows, shifts, poisson_sample=True, firing_rate_scale=1.0
-):
+def make_table_neural_fn(tables, unit_rows, shifts, firing_rate_scale):
     """The `neural_fn(theta0, theta1, rng) -> [n, n_samples]` closure the task wants, built
     purely from precomputed tables — no kernel math per call.
 
     Input `j` is unit `unit_rows[j]` rotated by `shifts[j]` grid steps: reading its table
     `k` cells over in **both** stimulus axes is evaluating that unit at the stimulus rotated
     by `k·dθ`, i.e. a copy of the neuron whose tuning is rigidly rotated by `−k·dθ`.
-    `firing_rate_scale` multiplies every rate before the (optional) Poisson draw: < 1 makes
-    Poisson noise dominate, > 1 makes it relatively smaller."""
+    `firing_rate_scale` multiplies every rate before the Poisson draw: < 1 makes Poisson noise
+    dominate, > 1 makes it relatively smaller."""
     n_grid = tables.shape[1]
     dtheta = 2 * np.pi / n_grid
     unit_rows = np.asarray(unit_rows)
@@ -118,8 +98,7 @@ def make_table_neural_fn(
         a0 = (i0[:, None] + shifts[None, :]) % n_grid  # [n_query, n_samples]
         a1 = (i1[:, None] + shifts[None, :]) % n_grid
         rates = tables[unit_rows[None, :], a0, a1] * firing_rate_scale
-        out = rng.poisson(rates) if poisson_sample else rates
-        return out.astype(np.float32)
+        return rng.poisson(rates).astype(np.float32)
 
     return neural_fn
 
@@ -174,10 +153,10 @@ def make_batch(
     )
 
 
-def _mlp(in_dim, hidden_sizes, out_dim, act=nn.ReLU):
+def _mlp(in_dim, hidden_sizes, out_dim):
     layers, d = [], in_dim
     for h in hidden_sizes:
-        layers += [nn.Linear(d, h), act()]
+        layers += [nn.Linear(d, h), nn.ReLU()]
         d = h
     return nn.Sequential(*layers, nn.Linear(d, out_dim))
 
@@ -195,31 +174,19 @@ class StimulusRepresentationModel(nn.Module):
         return self.mlp(neural)
 
 
-def model_output(
-    model, neural_fn, theta0, theta1, grid, rng, n_eval=1, device="cpu"
-):
-    """Mean output bump over `n_eval` stochastic population samples per stimulus."""
+def model_output(model, neural_fn, theta0, theta1, rng):
+    """The output bump for one stochastic population sample per stimulus."""
     model.eval()
     theta0 = np.atleast_1d(np.asarray(theta0, float))
     theta1 = np.atleast_1d(np.asarray(theta1, float))
-    acc = np.zeros((len(theta0), len(grid)))
     # `model.eval()` only switches layer behaviour; the graph is still built without this, and
     # `.numpy()` on a tensor that requires grad raises. Evaluation never backpropagates.
     with torch.no_grad():
-        for _ in range(n_eval):
-            acc += (
-                model(
-                    torch.as_tensor(
-                        neural_fn(theta0, theta1, rng), device=device
-                    )
-                )
-                .cpu()
-                .numpy()
-            )
-    return acc / n_eval
+        out = model(torch.as_tensor(neural_fn(theta0, theta1, rng))).numpy()
+    return out.astype(float)
 
 
-def decode_two_peaks(output, grid, min_peak_sep_deg=30.0):
+def decode_two_peaks(output, grid, min_peak_sep_deg):
     """The two most prominent peaks of each output curve, at least `min_peak_sep_deg` apart.
 
     The grid is circular, so each curve is tiled three times and peaks are kept only from
@@ -242,15 +209,13 @@ def decode_two_peaks(output, grid, min_peak_sep_deg=30.0):
     return peak_a, peak_b
 
 
-def train_model(model, neural_fn, cfg, rng, device="cpu", log_every=0):
+def train_model(model, neural_fn, cfg, rng):
     """Train the MLP with Adam on the MSE against the target bump. `cfg` needs
-    `n_angles, min_sep_deg, target_sigma_deg, batch_size, n_steps, lr`. Returns
-    `(losses, grid)`."""
+    `n_angles, min_sep_deg, target_sigma_deg, batch_size, n_steps, lr`."""
     grid = stimulus_grid(cfg["n_angles"])
     opt = torch.optim.Adam(model.parameters(), lr=cfg["lr"])
-    losses = []
     model.train()
-    for step in range(cfg["n_steps"]):
+    for _ in range(cfg["n_steps"]):
         _, _, neural, target = make_batch(
             neural_fn,
             cfg["batch_size"],
@@ -259,42 +224,20 @@ def train_model(model, neural_fn, cfg, rng, device="cpu", log_every=0):
             cfg["target_sigma_deg"],
             rng,
         )
-        out = model(torch.as_tensor(neural, device=device))
-        loss = ((out - torch.as_tensor(target, device=device)) ** 2).mean()
+        out = model(torch.as_tensor(neural))
+        loss = ((out - torch.as_tensor(target)) ** 2).mean()
         opt.zero_grad()
         loss.backward()
         opt.step()
-        losses.append(loss.item())
-        if log_every and (step % log_every == 0 or step == cfg["n_steps"] - 1):
-            print(f'step {step:5d}/{cfg["n_steps"]}  MSE={loss.item():.4f}')
-    return losses, grid
 
 
-def evaluate_error(
-    model,
-    neural_fn,
-    cfg,
-    rng,
-    n_test=2000,
-    n_eval=1,
-    device="cpu",
-    min_peak_sep_deg=30.0,
-):
-    """Per-trial mean per-object decode error (degrees) on a fresh random test set: the two
-    decoded peaks matched to the two true angles by whichever pairing has lower total error
-    (the task has no object order). Returns `(theta0, theta1, error_deg)`."""
+def evaluate_error(model, neural_fn, cfg, rng, n_test, min_peak_sep_deg):
+    """Per-trial mean per-object decode error (degrees) on a fresh random test set of
+    `n_test` stimuli: the two decoded peaks matched to the two true angles by whichever pairing
+    has lower total error (the task has no object order)."""
     grid = stimulus_grid(cfg["n_angles"])
     theta0, theta1 = sample_stimuli(n_test, cfg["min_sep_deg"], rng)
-    out = model_output(
-        model,
-        neural_fn,
-        theta0,
-        theta1,
-        grid,
-        rng,
-        n_eval=n_eval,
-        device=device,
-    )
+    out = model_output(model, neural_fn, theta0, theta1, rng)
     peak_a, peak_b = decode_two_peaks(
         out, grid, min_peak_sep_deg=min_peak_sep_deg
     )
@@ -304,4 +247,4 @@ def evaluate_error(
     swapped = np.degrees(circ_dist(peak_a, theta1)) + np.degrees(
         circ_dist(peak_b, theta0)
     )
-    return theta0, theta1, np.minimum(direct, swapped) / 2.0
+    return np.minimum(direct, swapped) / 2.0

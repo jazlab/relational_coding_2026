@@ -1,7 +1,7 @@
 """Build every cache the figures read, from the DANDI data, in dependency order.
 
-    python build_caches.py                    # everything (several hours)
-    python build_caches.py --n-jobs 4         # fewer parallel workers
+    python build_caches.py                    # everything (~4-5 hours)
+    python build_caches.py --n-jobs 6         # fewer parallel workers
     python build_caches.py --from modulation  # resume from a step
     python build_caches.py --only figure_4    # one step
     python build_caches.py --dry-run          # print the commands
@@ -14,13 +14,14 @@ picks up where it stopped.
 Steps:
     ring          behavior_processing/run_cache_data.py           seconds
     firing_rates  figures/firing_rates.py                         ~2 min
-    modulation    figure_3/model_comparison/run_modulation_cache  ~10 min
-    comparison    figure_3/model_comparison/run_comparison_cache  ~15 min
-    phase         figure_3/model_comparison/run_phase_cache       ~15 min
-    figure_4      figure_4/run_cache                              several hours
-    supp_figure_2 supp_figure_2/build_cache                       ~4 hours
+    modulation    figure_3/model_comparison/run_modulation_cache  ~6 min
+    comparison    figure_3/model_comparison/run_comparison_cache  ~4 min
+    phase         figure_3/model_comparison/run_phase_cache       ~3 min
+    titration     figure_3/efficient_coding/regenerate            ~25 min
+    figure_4      figure_4/run_cache                              ~1 hour
+    supp_figure_2 supp_figure_2/build_cache                       ~2.5 hours
 
-Times are for 6-8 workers. Every other cache (decoders, response profiles, pool tables, the
+Times are estimates for the default 12 workers on a 14-core laptop. Every other cache (decoders, response profiles, pool tables, the
 single-unit table, ...) is built automatically the first time a notebook needs it.
 """
 
@@ -30,8 +31,15 @@ import sys
 import time
 from pathlib import Path
 
-_FIGURES = Path(__file__).resolve().parent
-_ROOT = _FIGURES.parent
+_REPO = (
+    Path(__file__).resolve().parents[1]
+)  # repository root, where paths.py lives
+if str(_REPO) not in sys.path:
+    sys.path.insert(0, str(_REPO))
+import paths  # noqa: E402
+
+_FIGURES = paths.FIGURES
+_ROOT = paths.ROOT
 
 # (name, working directory, script and fixed arguments, whether it takes --n-jobs)
 STEPS = [
@@ -55,6 +63,13 @@ STEPS = [
         ["run_phase_cache.py"],
         True,
     ),
+    # Needs the comparison cache: the titration's neuron pool is read from it.
+    (
+        "titration",
+        _FIGURES / "figure_3/efficient_coding",
+        ["regenerate.py"],
+        True,
+    ),
     ("figure_4", _FIGURES / "figure_4", ["run_cache.py"], True),
     ("supp_figure_2", _FIGURES / "supp_figure_2", ["build_cache.py"], True),
 ]
@@ -64,7 +79,7 @@ NAMES = [s[0] for s in STEPS]
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument(
-        "--n-jobs", type=int, default=6, help="parallel workers (default 6)"
+        "--n-jobs", type=int, default=12, help="parallel workers (default 12)"
     )
     ap.add_argument(
         "--from", dest="start", choices=NAMES, help="start at this step"

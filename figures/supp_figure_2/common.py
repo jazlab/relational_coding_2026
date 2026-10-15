@@ -8,9 +8,9 @@ the 2-s stimulus + delay window. The question here is whether either result is c
 phase — in particular whether the relational code is present while the objects are visible,
 or only once they have to be held in memory.
 
-The same five results as `supp_figure_1` (split by area) and `supp_figure_9` (single units):
+The same four results as `supp_figure_1` (split by area) and `supp_figure_9` (single units):
 
-* from figure 3 — `model_wins_and_probability`, `rf_orientation`;
+* from figure 3 — `model_wins_and_probability`;
 * from figure 4 — `figure_model_comparison`, `figure_relationality`, `figure_ks_stats`.
 
 **Unlike those two, this is not a subset of cached fits.** A different window is different
@@ -24,7 +24,8 @@ reimplemented — and three module-level switches select the window:
   rate into a spike count with. 2 s by default; **1 s** for one phase, or every likelihood
   would be scored on doubled counts. Figure 3's estimators are ordinal and need no duration.
 
-:func:`use_phase` sets all three and repoints every cache path at this directory's own tree,
+:func:`use_phase` sets all three and repoints the cache paths the libraries read at call time
+at this directory's own tree,
 ``cache/figures/supp_figure_2/{phase}/``, so a phase fit can never land in, or be read
 from, the main figures' caches. `build_cache.py` builds those caches.
 
@@ -39,13 +40,8 @@ from, the main figures' caches. `build_cache.py` builds those caches.
 first, exactly as in `supp_figure_1`: both phases are drawn over the **same 1,339 neurons** as
 the main figures, so a difference between the two panels is a difference between phases, not
 between populations. What *is* recomputed within each phase is everything downstream — every
-fit, which model wins, the posteriors and elpd differences, the phase-determinacy cut of
-`rf_orientation`, the synthetic distributions of the KS test.
-
-.. note::
-   As in `supp_figure_1`, `figure_4/data_lib.py` does ``from common import
-   drop_east_west_arrays``, and from here *this* module is what ``common`` resolves to, so the
-   re-export below is load-bearing.
+fit, which model wins, the posteriors and elpd differences, the synthetic distributions of the
+KS test.
 """
 
 import sys
@@ -63,13 +59,7 @@ for _p in (
     if str(_p) not in sys.path:
         sys.path.insert(0, str(_p))
 
-import config  # noqa: E402,F401  the one place selection criteria are set
-from style import despine, save, set_style  # noqa: E402,F401
-from trial_filters import (  # noqa: E402,F401
-    drop_east_west,
-    drop_east_west_arrays,
-    east_west_mask,
-)
+from style import save, set_style  # noqa: E402,F401
 
 #: One figure each, in this order.
 PHASES = ("stimulus", "delay")
@@ -80,11 +70,14 @@ PHASE_COLUMN = {"stimulus": "stimulus_fr", "delay": "delay_fr"}
 PHASE_WINDOW_MS = {"stimulus": (0, 1000), "delay": (1000, 2000)}
 PHASE_DURATION_S = 1.0
 
-CACHE_ROOT = _ROOT / "cache/figures/supp_figure_2"
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+import paths  # noqa: E402
+
+CACHE_ROOT = paths.FIGURES_CACHE / "supp_figure_2"
 
 #: The figure-4 models this directory fits: the five the figures compare, the metric's own
-#: model, and the reference. `softmax` and `priority_map` are in the main cache but in no
-#: figure here, so they are not refit.
+#: model, and the reference (every model in `models_lib.MODEL_ORDER`).
 FIT_MODELS = (
     "future_field",
     "relational_bias",
@@ -95,28 +88,22 @@ FIT_MODELS = (
     "constant",
 )
 
-#: Figure 3's fits, at the settings the main caches were built with (read off their
+#: Figure 3's model comparison, at the settings the main cache was built with (read off its
 #: `fit_tag` / `param_*` columns): sigma 20 deg, 5 folds, uncapped comparisons and 1000
-#: bootstrap replicates for the model comparison; 50 bootstraps and the default comparison
-#: caps for the phase fit.
+#: bootstrap replicates.
 COMPARISON_N_BOOT = 1000
 
 
-def paths(phase):
+def phase_paths(phase):
     """Every cache path for one phase."""
     if phase not in PHASES:
         raise ValueError(f"phase must be one of {PHASES}, not {phase!r}")
     root = CACHE_ROOT / phase
     f3 = root / "figure_3"
     return dict(
-        root=root,
-        figure_3=f3,
         comparison_units=f3 / "comparison_units.csv",
         comparison_parts=f3 / "comparison_parts",
         comparison_boot=f3 / "comparison_boot",
-        phase_units=f3 / "phase_units.csv",
-        phase_draws=f3 / "phase_draws.csv.gz",
-        phase_parts=f3 / "phase_parts",
         figure_4=root / "figure_4",
         fits=root / "figure_4" / "fits",
         fit_parts=root / "figure_4" / "fit_parts",
@@ -129,24 +116,18 @@ def use_phase(phase, verbose=False):
     """Point the figure-3 and figure-4 libraries at one task phase, in this process.
 
     Sets the rate column, the likelihood's window length, and every cache path the libraries
-    read at call time. Paths a library binds as a *default argument* cannot be reached this
-    way and are passed explicitly by the loaders below; nothing here relies on them.
+    read at call time. Figure 3's paths are bound at import or as *default arguments*, which
+    this cannot reach, so they are passed explicitly (by :func:`comparison_units` and
+    `build_cache.py`) from the dict this returns.
     """
-    import comparison_lib as cl
     import data_lib as dl
     import ks_lib
     import stats_lib as sl
 
-    p = paths(phase)
+    p = phase_paths(phase)
     col = PHASE_COLUMN[phase]
 
     sl.FR_COLUMNS = (col,)
-    sl.CACHE_DIR = p["figure_3"]
-    sl.UNITS_PATH = p["phase_units"]
-    sl.PHASES_PATH = p["phase_draws"]
-    sl.PARTS_DIR = p["phase_parts"]
-    cl.CACHE_DIR = p["figure_3"]
-    cl.UNITS_PATH = p["comparison_units"]
 
     dl.FR_COLUMNS = (col,)
     dl.DURATION_S = PHASE_DURATION_S
@@ -163,27 +144,13 @@ def use_phase(phase, verbose=False):
 
 
 # ── Figure 3 ──────────────────────────────────────────────────────────────────
-def comparison_units(phase, apply_modulation=True):
+def comparison_units(phase):
     """One phase's sign-only model comparison, through the shared population criterion."""
     import comparison_lib as cl
     import stats_lib as sl
 
     p = use_phase(phase)
-    return sl.select_units(
-        cl.load_units(path=p["comparison_units"]),
-        apply_modulation=apply_modulation,
-    )
-
-
-def phase_fit(phase, apply_modulation=True):
-    """One phase's 2-object phase fit and its bootstrap draws: ``(units, phases)``."""
-    import stats_lib as sl
-
-    p = use_phase(phase)
-    units = sl.select_units(
-        sl.load_units(path=p["phase_units"]), apply_modulation=apply_modulation
-    )
-    return units, sl.load_phases(path=p["phase_draws"])
+    return sl.select_units(cl.load_units(path=p["comparison_units"]))
 
 
 # ── Figure 4 ──────────────────────────────────────────────────────────────────
@@ -209,11 +176,11 @@ def selected_fits(phase, models, verbose=True):
     return summary
 
 
-def selected_fits_by_phase(models, phases=PHASES, verbose=True):
+def selected_fits_by_phase(models):
     """``[(phase, that phase's selected fits), ...]`` — the figure-4 notebooks' entry point.
 
     The fits are plain tables, so reading them needs no phase state. Anything that *computes*
     — `ks_lib.synthetic_biases` — must call :func:`use_phase` for its group first, because
     after this returns the libraries are pointed at the last phase in the list.
     """
-    return [(ph, selected_fits(ph, models, verbose=verbose)) for ph in phases]
+    return [(ph, selected_fits(ph, models)) for ph in PHASES]

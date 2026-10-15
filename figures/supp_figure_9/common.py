@@ -2,7 +2,7 @@
 
 This directory is figures 3 and 4's population results recomputed over **well-isolated single
 units only**, pooled across recording sites — the complement to `supp_figure_1`, which splits
-the same five results by brain area and keeps every unit. The question
+the same four results by brain area and keeps every unit. The question
 it answers is whether the results are carried by multi-unit clusters, whose spikes may come
 from several neurons with different tuning and whose apparent selectivity is therefore a
 mixture.
@@ -49,34 +49,29 @@ for _p in (
     if str(_p) not in sys.path:
         sys.path.insert(0, str(_p))
 
-import config  # noqa: E402,F401  the one place selection criteria are set
-from style import despine, save, set_style  # noqa: E402,F401
-from trial_filters import (  # noqa: E402,F401
-    drop_east_west,
-    drop_east_west_arrays,
-    east_west_mask,
-)
+from style import save, set_style  # noqa: E402,F401
 
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
+import paths  # noqa: E402
 from phys_processing import spike_counts as spike_counts_lib  # noqa: E402
 
 #: Where the recovered table is kept. It is a property of the recordings rather than of this
-#: figure, so it lives with
-#: the other shared inputs rather than under this directory's own cache.
-QUALITY_PATH = _ROOT / "cache/figures/shared_inputs/unit_quality.csv"
+#: figure, so it lives with the other shared inputs rather than under this directory's own
+#: cache.
+QUALITY_PATH = paths.SHARED_INPUTS / "unit_quality.csv"
 
 #: The label this directory keeps. The only other value is 'mua'.
 GOOD = "good"
 
 
-def unit_quality(force=False, verbose=True):
+def unit_quality():
     """``(subject, session, unit, probe, quality)`` for every unit in the spike-sorting data.
 
     Read from the NWB unit tables, which are the only place the sorting label survives, and
     cached as a CSV.
     """
-    if QUALITY_PATH.exists() and not force:
+    if QUALITY_PATH.exists():
         return pd.read_csv(QUALITY_PATH)
     df = pd.concat(
         [
@@ -100,19 +95,16 @@ def unit_quality(force=False, verbose=True):
         )
     QUALITY_PATH.parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(QUALITY_PATH, index=False)
-    if verbose:
-        n = df.groupby(["subject", "quality"]).size()
-        print(f"built {QUALITY_PATH.name}: {len(df)} units\n{n.to_string()}")
     return df
 
 
-def add_quality(units, unit_col="unit", verbose=True):
+def add_quality(units, unit_col="unit"):
     """Join the sorting label onto a table keyed on ``(subject, session, <unit_col>)``.
 
     Raises if any row fails to match: an unlabelled neuron silently dropped by the cut below
     would change the population without saying so.
     """
-    q = unit_quality(verbose=False)[["subject", "session", "unit", "quality"]]
+    q = unit_quality()[["subject", "session", "unit", "quality"]]
     out = units.merge(
         q,
         left_on=["subject", "session", unit_col],
@@ -131,7 +123,7 @@ def add_quality(units, unit_col="unit", verbose=True):
     return out
 
 
-def good_only(units, unit_col="unit", verbose=True):
+def good_only(units, unit_col="unit"):
     """Keep the well-isolated single units. One group, so the notebooks read like the
     per-area ones with the loop collapsed."""
     u = add_quality(units, unit_col=unit_col)
@@ -140,24 +132,23 @@ def good_only(units, unit_col="unit", verbose=True):
         .drop(columns=["quality"])
         .reset_index(drop=True)
     )
-    if verbose:
-        n_all = len(u[["subject", "session", unit_col]].drop_duplicates())
-        n_good = len(kept[["subject", "session", unit_col]].drop_duplicates())
-        per = (
-            kept.drop_duplicates(["subject", "session", unit_col])
-            .groupby("subject")
-            .size()
-        )
-        print(
-            f"single units: {n_good} of {n_all} neurons kept "
-            f"({100 * n_good / max(n_all, 1):.0f}%)"
-        )
-        for s, n in per.items():
-            print(f"  {s}: {n}")
+    n_all = len(u[["subject", "session", unit_col]].drop_duplicates())
+    n_good = len(kept[["subject", "session", unit_col]].drop_duplicates())
+    per = (
+        kept.drop_duplicates(["subject", "session", unit_col])
+        .groupby("subject")
+        .size()
+    )
+    print(
+        f"single units: {n_good} of {n_all} neurons kept "
+        f"({100 * n_good / max(n_all, 1):.0f}%)"
+    )
+    for s, n in per.items():
+        print(f"  {s}: {n}")
     return kept
 
 
-def selected_fits_good(models, verbose=True):
+def selected_fits_good(models):
     """Figure 4's selected fits, restricted to single units, then re-restricted to ``models``.
 
     Same order as `supp_figure_1.selected_fits_by_area`: the shared criterion first, the cut
@@ -170,8 +161,8 @@ def selected_fits_good(models, verbose=True):
 
     summary = fit_lib.load_summary(fit_lib.FitConfig(), verbose=False)
     summary = neuron_selection.filter_units(
-        summary, unit_col="unit", verbose=verbose
+        summary, unit_col="unit", verbose=True
     )
-    rows = good_only(summary, unit_col="unit", verbose=verbose)
+    rows = good_only(summary, unit_col="unit")
     rows = fit_lib.restrict_models(rows, models, verbose=False)
     return [(GOOD, rows)]

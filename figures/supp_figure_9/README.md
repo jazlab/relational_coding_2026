@@ -1,12 +1,11 @@
 # `supp_figure_9/` — the same results over single units only
 
 Figures 3 and 4's population results recomputed over **well-isolated single units**, pooled
-across recording sites. The complement to `supp_figure_1/`, which splits the same five results
+across recording sites. The complement to `supp_figure_1/`, which splits the same four results
 by brain area and keeps every unit. The question: is any of this carried by multi-unit
 clusters, whose spikes may come from several neurons with different tuning?
 
     model_wins_and_probability_good.pdf   figure 3's model comparison
-    rf_orientation_good.pdf               figure 3's 2-object phase vs the 1-object RF
     figure_model_comparison_good.pdf      figure 4's delta-elpd model comparison
     figure_relationality_good.pdf         figure 4's distribution of relationality
     figure_ks_stats_good.pdf              figure 4's KS test of each model as a generator
@@ -34,22 +33,3 @@ interval drawn or printed, the bootstrap resampling.
 **672 of 1,339 neurons (50%) are single units** — 556 of Monkey P's 998 and 116 of Monkey E's
 341. Monkey E's panel is therefore the thin one; at 116 neurons it is comparable to
 `supp_figure_1`'s Elgar/DMFC panel (86).
-
-## Two things that were fixed on 2026-09-13
-
-`ks_lib.synthetic_biases` documented itself as simulating "the same neurons the real distribution
-is measured over", but filtered its result on `rep` and `model` only, never on the unit list, so
-every neuron ever cached for those sessions came back. Here that put single units on the data
-curve and single units *plus* multi-unit clusters on every model curve. It is now fixed in
-`ks_lib` itself — figure 4's KS distances moved by at most 0.004, so the reason for keeping the
-workaround local did not survive measurement — and this directory's `common.align_synthetic` was
-deleted with it.
-
-`figure_model_comparison.ipynb` still drew the **softmax-posterior** panel that figure 4 retired
-on the same day: a posterior softmaxed over a resampled dataset of 30 neurons contributing one
-trial each, whose error bar was Monte-Carlo precision and whose violin width was set by that
-arbitrary dataset size. It now draws figure 4's replacement — a delta-elpd against the reference
-model with a **95% confidence interval of the mean across neurons** — so the supplement and the
-panel are once again the same analysis over different populations. The cluster-robust standard
-error across sessions and the session-level bootstrap are printed beside it; `ERR_WHICH` switches
-the whisker to either.

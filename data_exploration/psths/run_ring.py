@@ -26,12 +26,13 @@ from matplotlib import pyplot as plt
 
 _ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_ROOT))
+import paths  # noqa: E402
 from phys_processing import spike_counts as spike_counts_lib  # noqa: E402
 
 _BIN_SIZE_SECONDS = spike_counts_lib.BIN_MS / 1000
 _LEAD_IN_SECONDS = spike_counts_lib.LEAD_IN_MS / 1000
-_WRITE_DIR = _ROOT / "cache/data_exploration/psths"
-_BEHAVIOR_CACHE_PATH_RING = _ROOT / "cache/behavior_processing/ring.csv"
+_WRITE_DIR = paths.DATA_EXPLORATION_CACHE / "psths"
+_BEHAVIOR_CACHE_PATH_RING = paths.RING_CSV
 _PALETTE = {
     (0,): (1, 0, 0),
     (1,): (0, 1, 0),

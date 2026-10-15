@@ -24,15 +24,6 @@ not an analysis choice, and every analysis in `figures/` applies it.
 import config
 import numpy as np
 
-
-# Read from `config` at call time (never copied here), so `config.reload()` reaches a
-# running notebook. See the note in `config.reload`.
-def _tol():
-    return (
-        config.EAST_WEST_TOL_DEG
-    )  # a match this close counts as the repeated pair
-
-
 THETA_COLUMNS = ("object_0_theta", "object_1_theta")
 
 
@@ -44,33 +35,29 @@ def _circ_dist(a, b):
     )
 
 
-def east_west_mask(theta_0, theta_1, tol_deg=None):
+def east_west_mask(theta_0, theta_1):
     """`True` where a trial is the east–west antipodal pair, in either object order.
 
     Angles are in radians. A 1-object trial (whose second angle is NaN) is never east–west,
     which falls out of the comparison rather than needing a special case.
     """
-    tol = np.radians(_tol() if tol_deg is None else tol_deg)
+    # Read from `config` at call time (never copied here), so `config.reload()` reaches a
+    # running notebook.
+    tol = np.radians(config.EAST_WEST_TOL_DEG)
     t0, t1 = np.asarray(theta_0, float), np.asarray(theta_1, float)
     return ((_circ_dist(t0, 0.0) <= tol) & (_circ_dist(t1, np.pi) <= tol)) | (
         (_circ_dist(t0, np.pi) <= tol) & (_circ_dist(t1, 0.0) <= tol)
     )
 
 
-def drop_east_west(df, columns=THETA_COLUMNS, verbose=False):
+def drop_east_west(df):
     """The rows of `df` that are not the east–west pair.
 
-    `columns` names the two object-angle columns, in radians. Rows missing either angle —
+    The object angles are read from `THETA_COLUMNS`, in radians. Rows missing either angle —
     1-object trials — are kept.
     """
-    theta_0, theta_1 = (df[c].to_numpy(float) for c in columns)
-    mask = east_west_mask(theta_0, theta_1)
-    if verbose and mask.any():
-        print(
-            f"dropped {int(mask.sum())} east-west antipodal trials "
-            f"({int(mask.sum()) / len(df):.1%} of {len(df)})"
-        )
-    return df[~mask]
+    theta_0, theta_1 = (df[c].to_numpy(float) for c in THETA_COLUMNS)
+    return df[~east_west_mask(theta_0, theta_1)]
 
 
 def drop_east_west_arrays(theta_0, theta_1, *others):

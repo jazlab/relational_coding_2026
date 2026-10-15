@@ -14,9 +14,6 @@ For each neuron, from its completed 2-object trials only (east-west pair dropped
 ``figures/neuron_selection.py`` turns ``dev`` and ``p`` into the population every model
 figure is drawn over; see its docstring for the full definition. ``run_modulation_cache.py``
 builds the table.
-
-Ported unchanged from the paper's original analysis code (``stats_lib`` of the superseded
-figure 3), so a rebuild reproduces the published table.
 """
 
 import sys
@@ -37,9 +34,9 @@ RATE_FLOOR = 1e-6  # Hz — keeps log(rate) finite
 _IOA_N_GRID = 91  # candidate preferred distances for the proximity model
 
 
-def mod_params(**overrides):
+def mod_params():
     """The statistic's parameters, read from ``config`` when called."""
-    p = dict(
+    return dict(
         bandwidth_deg=config.BANDWIDTH_DEG,
         n_folds=config.N_FOLDS,
         n_cv_repeats=config.N_CV_REPEATS,
@@ -47,8 +44,6 @@ def mod_params(**overrides):
         min_2obj_trials=config.MIN_2OBJ_TRIALS,
         seed=config.SEED,
     )
-    p.update(overrides)
-    return p
 
 
 # ── Model helpers ─────────────────────────────────────────────────────────────
@@ -85,13 +80,13 @@ def design(model, t0, t1):
     raise ValueError(f"{model!r} is not a linear model (expected const or cw)")
 
 
-def poisson_loglik(X, beta, y, exposure=None):
-    """Poisson log-likelihood (dropping ``log Γ(y+1)``) under ``exposure · rectify(X @ beta)``."""
-    exposure = DURATION_S if exposure is None else exposure
+def poisson_loglik(X, beta, y):
+    """Poisson log-likelihood (dropping ``log Γ(y+1)``) of counts ``y`` over the
+    ``DURATION_S`` window, at the rate ``rectify(X @ beta)``."""
     with np.errstate(
         all="ignore"
     ):  # macOS BLAS raises spurious matmul FP flags
-        mu = exposure * rectify(X @ beta)
+        mu = DURATION_S * rectify(X @ beta)
         return float(np.sum(y * np.log(np.maximum(mu, 1e-300)) - mu))
 
 
@@ -99,32 +94,31 @@ def _sigmoid(z):
     return 0.5 * (1.0 + np.tanh(0.5 * np.clip(z, -60.0, 60.0)))
 
 
-def _poisson_nll_grad(beta, X, y, exposure):
+def _poisson_nll_grad(beta, X, y):
     """Negative log-likelihood and its gradient, through the rectifier."""
     with np.errstate(all="ignore"):
         r = X @ beta
         rate = rectify(r)
-        mu = exposure * rate
+        mu = DURATION_S * rate
         nll = float(np.sum(mu - y * np.log(np.maximum(mu, 1e-300))))
         if not np.isfinite(nll):
             return 1e18, np.zeros_like(beta)
-        dmu = exposure * _sigmoid(r / RECTIFY_SCALE)  # d mu / d eta
+        dmu = DURATION_S * _sigmoid(r / RECTIFY_SCALE)  # d mu / d eta
         grad = X.T @ ((1.0 - y / np.maximum(mu, 1e-300)) * dmu)
     return nll, grad
 
 
-def poisson_irls(
-    X, y, exposure=None, max_iter=50, tol=1e-9, ridge=1e-9, polish=True
-):
+def poisson_irls(X, y, max_iter=50, tol=1e-9, ridge=1e-9):
     """Identity-link Poisson GLM by safeguarded IRLS, polished with L-BFGS-B on the exact
-    rectified likelihood. Column 0 of ``X`` must be the intercept."""
-    exposure = DURATION_S if exposure is None else exposure
+    rectified likelihood. ``y`` are counts over the ``DURATION_S`` window; column 0 of ``X``
+    must be the intercept."""
+    exposure = DURATION_S
     X = np.asarray(X, float)
     y = np.asarray(y, float)
     beta = np.zeros(X.shape[1])
     beta[0] = max(y.mean(), 1e-6) / exposure  # intercept-only start (Hz)
     with np.errstate(all="ignore"):
-        cur = poisson_loglik(X, beta, y, exposure)
+        cur = poisson_loglik(X, beta, y)
         for _ in range(max_iter):
             rate = rectify(X @ beta)
             mu = exposure * rate
@@ -145,43 +139,39 @@ def poisson_irls(
             step = 0.0
             for shrink in (1.0, 0.5, 0.25, 0.125):
                 cand = beta + shrink * (new - beta)
-                cand_ll = poisson_loglik(X, cand, y, exposure)
+                cand_ll = poisson_loglik(X, cand, y)
                 if np.isfinite(cand_ll) and cand_ll >= cur:
                     step = float(np.max(np.abs(cand - beta)))
                     beta, cur, accepted = cand, cand_ll, True
                     break
             if not accepted or step < tol:
                 break
-    if polish:
-        res = minimize(
-            _poisson_nll_grad,
-            beta,
-            args=(X, y, exposure),
-            jac=True,
-            method="L-BFGS-B",
-        )
-        if res.success and np.isfinite(res.fun) and -res.fun >= cur - 1e-9:
-            beta = res.x
+    res = minimize(
+        _poisson_nll_grad,
+        beta,
+        args=(X, y),
+        jac=True,
+        method="L-BFGS-B",
+    )
+    if res.success and np.isfinite(res.fun) and -res.fun >= cur - 1e-9:
+        beta = res.x
     return beta
 
 
-def ioa_feature_grid(t0, t1, grid=None, n_grid=_IOA_N_GRID):
+def ioa_feature_grid(t0, t1, n_grid=_IOA_N_GRID):
     """``(T, grid)``: the proximity feature ``|d01 − δ|`` at every candidate δ, spanning the
     observed range of ``d01``."""
     d = d01(t0, t1)
-    if grid is None:
-        lo, hi = float(np.min(d)), float(np.max(d))
-        grid = (
-            np.linspace(lo, hi, n_grid) if hi > lo + 1e-9 else np.array([lo])
-        )
-    grid = np.asarray(grid, float)
+    lo, hi = float(np.min(d)), float(np.max(d))
+    grid = np.linspace(lo, hi, n_grid) if hi > lo + 1e-9 else np.array([lo])
     return np.abs(d[:, None] - grid[None, :]), grid
 
 
-def ioa_fit_from_grid(T, y, exposure=None, max_iter=25, tol=1e-9, polish=True):
+def ioa_fit_from_grid(T, y, max_iter=25, tol=1e-9):
     """Fit ``rate = β + α·T[:, k]`` at every candidate δ at once (vectorised 2×2 IRLS) and
-    return the best ``(k, β, α)`` by log-likelihood, the winner polished."""
-    exposure = DURATION_S if exposure is None else exposure
+    return the best ``(k, β, α)`` by log-likelihood, the winner polished. ``y`` are counts
+    over the ``DURATION_S`` window."""
+    exposure = DURATION_S
     y = np.asarray(y, float)
     T = np.asarray(T, float)
     n, K = T.shape
@@ -226,11 +216,10 @@ def ioa_fit_from_grid(T, y, exposure=None, max_iter=25, tol=1e-9, polish=True):
 
     k = int(np.nanargmax(best_ll))
     bk, ak = float(best_b[k]), float(best_a[k])
-    if polish:
-        X = np.column_stack([np.ones(n), T[:, k]])
-        beta = poisson_irls(X, y, exposure, max_iter=max_iter, tol=tol)
-        if poisson_loglik(X, beta, y, exposure) >= best_ll[k] - 1e-9:
-            bk, ak = float(beta[0]), float(beta[1])
+    X = np.column_stack([np.ones(n), T[:, k]])
+    beta = poisson_irls(X, y, max_iter=max_iter, tol=tol)
+    if poisson_loglik(X, beta, y) >= best_ll[k] - 1e-9:
+        bk, ak = float(beta[0]), float(beta[1])
     return k, bk, ak
 
 
@@ -296,11 +285,11 @@ def _cv_metrics(t0, t1, y, W, p, rng):
         ss_tot += np.sum((y[test] - ybar) ** 2)
         ss_res["kernel"] += np.sum((y[test] - muk) ** 2)
         for key, X in (("const", Xc), ("cw", Xw)):
-            beta = poisson_irls(X[train], y[train], DURATION_S)
+            beta = poisson_irls(X[train], y[train])
             with np.errstate(all="ignore"):
                 mu = DURATION_S * rectify(X[test] @ beta)
             ss_res[key] += np.sum((y[test] - mu) ** 2)
-        k, b, a = ioa_fit_from_grid(T_ioa[train], y[train], DURATION_S)
+        k, b, a = ioa_fit_from_grid(T_ioa[train], y[train])
         mu = DURATION_S * rectify(b + a * T_ioa[test][:, k])
         ss_res["ioa"] += np.sum((y[test] - mu) ** 2)
 
@@ -348,25 +337,17 @@ def neuron_modulation(t0, t1, fr, p, seed=0):
             k: float(np.nanmean([c[k] for c in cms]))
             for k in ("dev", "cv_r2", "const_cv_r2", "cw_cv_r2", "ioa_cv_r2")
         }
-        null_mean = null_std = z = pval = np.nan
-        if p["n_shuffles"] > 0:
-            null = np.array(
-                [
-                    _cv_dev_kernel(
-                        rng.permutation(y), W, p, np.random.default_rng(seed)
-                    )
-                    for _ in range(p["n_shuffles"])
-                ]
-            )
-            null_mean, null_std = float(np.nanmean(null)), float(
-                np.nanstd(null)
-            )
-            z = (
-                (cm["dev"] - null_mean) / null_std
-                if null_std > 1e-9
-                else np.nan
-            )
-            pval = float((1 + np.sum(null >= cm["dev"])) / (1 + len(null)))
+        null = np.array(
+            [
+                _cv_dev_kernel(
+                    rng.permutation(y), W, p, np.random.default_rng(seed)
+                )
+                for _ in range(p["n_shuffles"])
+            ]
+        )
+        null_mean, null_std = float(np.nanmean(null)), float(np.nanstd(null))
+        z = (cm["dev"] - null_mean) / null_std if null_std > 1e-9 else np.nan
+        pval = float((1 + np.sum(null >= cm["dev"])) / (1 + len(null)))
     return {
         **base,
         **cm,

@@ -22,10 +22,8 @@ it picks up where it left off:
      (neuron, model, replicate) with a fingerprint of the fit they came from, so this too
      computes only what is missing.
 
-Never every core: `--n-jobs` defaults to 8 of this machine's 14 and refuses more than 12.
-Eight is the everyday setting that leaves the machine usable; 12 is for a long unattended
-run where throughput matters more than interactive responsiveness, and was raised from 10
-deliberately for the `priority_map` fits.
+`--n-jobs` defaults to 8, which leaves a typical workstation usable; `figures/build_caches.py`
+passes 12, for a long unattended run where throughput matters more.
 
 **Resuming.** Both stages are resumable at *session* granularity: `fit_session` writes a
 session's fits only once that session finishes, so re-running after an interruption redoes
@@ -55,7 +53,7 @@ import ks_lib  # noqa: E402
 import models_lib as ml  # noqa: E402
 import relationality_lib as rl  # noqa: E402
 
-#: Every model. `MODEL_ORDER` is the whole set now, so there is nothing to add to it.
+#: Every model.
 ALL_MODELS = tuple(ml.MODEL_ORDER)
 
 N_REPS, SIM_SEED = 5, 0
@@ -77,9 +75,8 @@ def recover_biases(cfg, n_jobs, n_reps=N_REPS, seed=SIM_SEED, verbose=True):
     """Stage 2 — the relationality of model-generated data, for every model.
 
     The population is `common.selected_fits`, the shared model-agnostic criterion, and it is
-    not a knob: `figure_ks_stats.ipynb` reads these rows for exactly those neurons, and a
-    population chosen here by held-out ΔLL — which is what this used to do — would leave the
-    figure refitting the difference on every run.
+    not a knob: `figure_ks_stats.ipynb` reads these rows for exactly those neurons, and any
+    other population here would leave the figure refitting the difference on every run.
 
     `relational_bias` is in the model list because the figure needs a row for it too: it is
     the metric's own model, and its synthetic distribution is the noise floor the others are
@@ -106,9 +103,6 @@ def recover_biases(cfg, n_jobs, n_reps=N_REPS, seed=SIM_SEED, verbose=True):
         n_reps=n_reps,
         seed=seed,
         n_jobs=n_jobs,
-        cache=True,
-        resume=True,
-        min_dll=None,
         verbose=verbose,
     )
     print(f"\n{len(synth):,} synthetic neurons, {len(real):,} real")
@@ -119,8 +113,6 @@ def recover_biases(cfg, n_jobs, n_reps=N_REPS, seed=SIM_SEED, verbose=True):
             models,
             by_subject=True,
             n_boot=200,
-            ci=0.95,
-            source="both",
         )
         .round(3)
         .to_string()
@@ -134,7 +126,7 @@ def main():
         "--n-jobs",
         type=int,
         default=8,
-        help="worker processes. Never every core: this machine has 14",
+        help="worker processes",
     )
     ap.add_argument(
         "--stage", choices=("all", "fits", "recovery"), default="all"
@@ -144,10 +136,8 @@ def main():
     )
     ap.add_argument("--n-reps", type=int, default=N_REPS)
     args = ap.parse_args()
-    if not 1 <= args.n_jobs <= 12:
-        raise SystemExit(
-            "--n-jobs must be between 1 and 12: leave the machine usable"
-        )
+    if args.n_jobs < 1:
+        raise SystemExit("--n-jobs must be at least 1")
 
     cfg = fit_lib.FitConfig(models=ALL_MODELS)
     sessions = dl.fr_sessions()

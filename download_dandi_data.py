@@ -36,7 +36,9 @@ from pathlib import Path
 
 from dandi import dandiapi
 
-_WRITE_DIR = Path("./cache/dandi_data")
+import paths  # this script lives in the repository root, next to paths.py
+
+_WRITE_DIR = paths.DANDI_DATA
 _MODALITY_TO_SUFFIX = {
     "behavior": "behavior+task",
     "spikesorting": "spikesorting",

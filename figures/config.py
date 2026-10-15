@@ -4,12 +4,12 @@ Every rule that decides which neurons and which trials enter an analysis lives h
 nowhere else. Change a number in this file and every figure that depends on it changes
 together — which is the point: the alternative is the same threshold written into a dozen
 notebook CONFIG cells, drifting apart until two panels of one figure are drawn over
-different populations. (They were. `figure_4`'s three model panels used `MIN_DLL` 0.01,
-0.01 and 0.1, so they showed 1,903, ~1,880 and 839 neurons.)
+different populations.
 
 Who reads what
 --------------
-    NEURON SELECTION      `neuron_selection.py`  -> figure_3, figure_4, supp_1, supp_2
+    NEURON SELECTION      `neuron_selection.py`  -> every population analysis (figure_3,
+                          figure_4, supp_1, supp_2, supp_9, ...)
                           (2-object trials only — a 1-object trial floor is a prerequisite
                            of `rf_orientation`, not of entering a population)
     THE STATISTIC         `figure_3/model_comparison/modulation_lib.py`
@@ -32,19 +32,15 @@ the p-values themselves change, not just where they are cut.
 # fits would answer part of that question before the figure is drawn. The full definition is
 # in `neuron_selection.py`.
 
-#: How the permutation p-value is thresholded.
-#:   'fdr'  — Benjamini-Hochberg across every tested neuron at `FDR_Q`. ~3000 neurons are
-#:            tested at once, so an uncorrected 5% cut would admit ~150 by chance.
-#:   'raw'  — threshold the p-value directly at `FDR_Q`, no correction. For comparison only.
-CORRECTION = "fdr"
-
-#: The cutoff: the false-discovery rate when CORRECTION = 'fdr', the raw p ceiling otherwise.
-#: It cannot go below 1/(1 + N_SHUFFLES) — no permutation test can produce a smaller p.
+#: The false-discovery rate at which the permutation p-values are thresholded, by
+#: Benjamini-Hochberg across every tested neuron. ~3000 neurons are tested at once, so an
+#: uncorrected 5% cut would admit ~150 by chance. It cannot usefully go below
+#: 1/(1 + N_SHUFFLES) — no permutation test can produce a smaller p.
 FDR_Q = 0.05
 
 #: An **effect-size** floor, applied on top of the significance test above: a neuron enters
 #: only if the kernel smoother explains at least this fraction of its held-out Poisson
-#: deviance. `0.0` disables it, keeping every significant neuron.
+#: deviance.
 #:
 #: This is the knob to reach for when you want FEWER neurons. `FDR_Q` cannot do it: 1516 of
 #: the 3011 tested neurons sit exactly on the p resolution floor (1/201 = 0.0050), so Benjamini-
@@ -57,8 +53,8 @@ FDR_Q = 0.05
 #: — so raising it does not prejudge which model wins in figures 3 and 4.
 #:
 #: For scale, among the 1339 neurons currently selected: median dev = 0.077, quartiles
-#: 0.040 / 0.171, 90th percentile 0.310, max 0.749. Without this floor (`MIN_DEV = 0`)
-#: 1801 neurons would pass.
+#: 0.040 / 0.171, 90th percentile 0.310, max 0.749. Without this floor 1801 neurons would
+#: pass.
 MIN_DEV = 0.02
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -74,15 +70,14 @@ N_CV_REPEATS = 10  # re-randomise the folds this many times and average
 
 #: Permutations of the firing rates across a neuron's own trials, forming the null. The
 #: smallest p-value obtainable is 1/(1 + N_SHUFFLES), so this has to sit comfortably below
-#: FDR_Q — at the old value of 50 the BH cutoff landed exactly on the 1/51 = 0.0196 floor,
-#: i.e. the test was resolution-limited rather than measuring anything finer. It is the
-#: expensive knob: the null is recomputed this many times per neuron.
+#: FDR_Q, or the BH cutoff lands on the resolution floor and the test stops measuring
+#: anything finer. It is the expensive knob: the null is recomputed this many times per neuron.
 N_SHUFFLES = 200
 
 #: A neuron with fewer 2-object trials than this is never tested, so it can never pass. This
-#: is the trial-count floor on every population figure, and now the only one: the criterion is
+#: is the trial-count floor on every population figure, and the only one: the criterion is
 #: computed from 2-object trials alone, so nothing about a neuron's 1-object trial count
-#: decides whether it enters a population. (It used to. See MIN_1OBJ_TRIALS below.)
+#: decides whether it enters a population.
 #:
 #: Raising it is not free: it is applied when `modulation.csv` is BUILT, so a change here
 #: needs `python run_modulation_cache.py --force` before it reaches any figure. It also moves
@@ -96,8 +91,8 @@ SEED = 0
 # ══════════════════════════════════════════════════════════════════════════════
 # TRIAL SELECTION — which trials enter, before any neuron is scored
 # ══════════════════════════════════════════════════════════════════════════════
-#: Only completed trials — the animal held fixation through the delay and responded.
-COMPLETED_ONLY = True
+# Only completed trials are used everywhere: the animal held fixation through the delay
+# and responded.
 
 #: The east-west antipodal 2-object pair (one object at 0 deg, the other at 180 deg) was
 #: presented of the order of a thousand times per session and is dropped everywhere. A match
@@ -122,45 +117,17 @@ MAX_ERROR_DEG = 30
 #: window was applied to the running eye trace under real-time constraints, while the stored
 #: `response_position` comes from a slightly better offline saccade detection. Over the trials
 #: that figure plots the two agree on ~99.4%; the residue is trials sitting within a hair of
-#: the boundary either way. The notebook prints the comparison every time it runs.
-#:
-#: It was 0.18, which disagreed with the old upstream `load_ring_data.py` (0.2) — so 0.2 it is,
-#: which is also the closest single cut to the record (0.197 is marginally closer).
+#: the boundary either way. The notebook prints the comparison every time it runs. 0.2 is
+#: close to the single cut that best matches the reward record (0.197).
 REWARD_THRESHOLD = 0.2
 
 # ══════════════════════════════════════════════════════════════════════════════
 # MEASUREMENT PREREQUISITES — not population selection
 # ══════════════════════════════════════════════════════════════════════════════
-#: `rf_orientation` plots a 2-object phase measured *relative to* each neuron's 1-object
-#: receptive field, so a neuron whose 1-object tuning fit is undetermined would contribute a
-#: phase relative to a random direction. This is a requirement of that measurement, not a
-#: statement about which neurons are modulated — which is why it is separate from the
-#: criterion above. `None` switches it off.
-P_THRESH_1OBJ = 0.05
-
-#: `rf_orientation` again — each ROW of that figure shows the 2-object phase under ONE
-#: model, so a neuron whose fit *under that row's model* is undetermined has no phase to
-#: place. It is per-row and model-specific, which is exactly why it is a prerequisite of the
-#: measurement and not the population criterion: it never decides who is in the population,
-#: only who has a measurable phase on a given axis. `None` switches it off.
-P_THRESH_2OBJ = 0.05
-
-# `MIN_R2_1OBJ` and `MIN_R2_2OBJ` lived here until 2026-09-11: effect-size floors on the
-# parametric fits' R-squared, the `MIN_DEV` idea applied to `rf_orientation`'s prerequisites.
-# They went with `figure_3_deprecated/`, whose `stats_lib` was their only consumer paper-wide.
-# `rf_orientation` has no R-squared to floor; its prerequisite is a Wald test on the fitted
-# tuning vector, and a precision floor in degrees was measured against it and removed as
-# inert.
-
 #: `rf_orientation` measures a 2-object phase **relative to** each neuron's 1-object
 #: receptive field, so it needs enough 1-object trials for that field to be worth measuring
-#: from. It is a prerequisite of *that measurement*, not a population criterion — which is
-#: where it now lives.
-#:
-#: It used to gate the modulation cache instead, and so silently decided who entered every
-#: population figure. That was wrong twice over: the 2-object criterion never touches
-#: 1-object data, and the gate removed 282 neurons that had ample 2-object trials (up to 528)
-#: purely for having fewer than 100 1-object ones.
+#: from. It is a prerequisite of *that measurement*, not a population criterion: the
+#: 2-object criterion never touches 1-object data.
 MIN_1OBJ_TRIALS = 100
 
 #: `rf_per_anchor` (figure 2) fits one tuning curve per anchor condition; an anchor with

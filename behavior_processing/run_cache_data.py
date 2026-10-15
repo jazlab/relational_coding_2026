@@ -19,15 +19,22 @@ the root of this repo.
 """
 
 import ast
+import sys
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 from pynwb import NWBHDF5IO
 
-_ROOT = Path(__file__).resolve().parent.parent
-_DATA_DIR = _ROOT / "cache/dandi_data/behavior"
-_WRITE_PATH = _ROOT / "cache/behavior_processing/ring.csv"
+_REPO = (
+    Path(__file__).resolve().parents[1]
+)  # repository root, where paths.py lives
+if str(_REPO) not in sys.path:
+    sys.path.insert(0, str(_REPO))
+import paths  # noqa: E402
+
+_DATA_DIR = paths.BEHAVIOR_NWB
+_WRITE_PATH = paths.RING_CSV
 _NUM_OBJECTS = 2  # Ring-task trials have one or two objects
 _DATA_COLUMNS = (
     [

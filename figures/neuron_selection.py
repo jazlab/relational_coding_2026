@@ -65,10 +65,12 @@ Using it
     keep = neuron_selection.passing_units()            # subject / session / unit_id
     df = neuron_selection.filter_units(df, unit_col='unit')   # any frame with those keys
 
-`figure_3`, `figure_4`, `supp_figure_1` and `supp_figure_2` all route their population
-selection through here, so the four figures are drawn over exactly the same neurons.
+Every population analysis (figure 3, figure 4, supp figures 1, 2 and 9, figure 3's
+`motor_decoding_schematic`, ...) routes its selection through here, so they all start from
+the same neurons.
 """
 
+import sys
 from pathlib import Path
 
 import config
@@ -78,33 +80,31 @@ import pandas as pd
 _HERE = Path(__file__).resolve().parent
 _ROOT = _HERE.parent
 
-#: Where `run_modulation_cache.py` writes. There used to be a second, byte-different but
-#: numerically identical copy under the superseded figure's cache, tried as a fallback. It was
-#: removed: a fallback into a directory scheduled for deletion is the kind of reference that
-#: changes the population silently rather than failing, and this file defines the population
-#: every figure in the paper selects on.
-MODULATION_PATH = _ROOT / "cache/figures/shared_inputs/modulation.csv"
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+import paths  # noqa: E402
+
+#: Where `run_modulation_cache.py` writes.
+MODULATION_PATH = paths.SHARED_INPUTS / "modulation.csv"
 
 # ── The criterion's parameters ────────────────────────────────────────────────
 # They live in `config.py`, and are read from it **at call time**, never copied into module
 # constants or default arguments here. That is what lets `config.reload()` reach a running
 # notebook: a `FDR_Q = config.FDR_Q` at this level would freeze the value at import and the
-# edit would silently not take effect. Every public function below therefore defaults its
-# thresholds to `None` and resolves them when it runs.
+# edit would silently not take effect.
 
 _ID = ["subject", "session", "unit_id"]
 
 
-def load_modulation(path=None):
+def load_modulation():
     """The per-neuron modulation table, with `dev`, `p` and the parameters behind them."""
-    if path is None:
-        path = MODULATION_PATH
-        if not path.exists():
-            raise FileNotFoundError(
-                f"{path} not found. It is the paper-wide modulation criterion, written by the "
-                "`python run_modulation_cache.py` in figures/figure_3/model_comparison/."
-            )
-    return pd.read_csv(path)
+    if not MODULATION_PATH.exists():
+        raise FileNotFoundError(
+            f"{MODULATION_PATH} not found. It is the paper-wide modulation criterion, "
+            "written by `python run_modulation_cache.py` in "
+            "figures/figure_3/model_comparison/."
+        )
+    return pd.read_csv(MODULATION_PATH)
 
 
 def benjamini_hochberg(p, q=None):
@@ -127,16 +127,15 @@ def benjamini_hochberg(p, q=None):
     return finite & (p <= cutoff)
 
 
-def significance(
-    modulation=None, q=None, use_fdr=None, min_dev=None, verbose=True
-):
+def significance(verbose=True):
     """The modulation table with a boolean `modulated` column added.
 
-    Two cuts, both model-agnostic. **Significance** — is there any reproducible stimulus
-    dependence — then **effect size**: `dev >= min_dev`, how much of the neuron's held-out
-    Poisson deviance the kernel smoother actually explains.
+    Two cuts, both model-agnostic. **Significance** — Benjamini-Hochberg at `config.FDR_Q`:
+    is there any reproducible stimulus dependence — then **effect size**:
+    `dev >= config.MIN_DEV`, how much of the neuron's held-out Poisson deviance the kernel
+    smoother actually explains.
 
-    `min_dev` is the knob for keeping fewer neurons. Once a large fraction of the population
+    `MIN_DEV` is the knob for keeping fewer neurons. Once a large fraction of the population
     sits on the p resolution floor `1/(1 + n_shuffles)`, Benjamini-Hochberg rejects all of
     them or none, so tightening `q` steps off a cliff instead of trimming; `dev` is
     continuous and keeps discriminating past that point.
@@ -146,83 +145,61 @@ def significance(
     threshold below that admits nobody, and a threshold *at* it means the test is
     resolution-limited rather than measuring anything finer.
     """
-    q = config.FDR_Q if q is None else q
-    use_fdr = (config.CORRECTION == "fdr") if use_fdr is None else use_fdr
-    min_dev = config.MIN_DEV if min_dev is None else min_dev
+    q = config.FDR_Q
+    min_dev = config.MIN_DEV
 
-    df = load_modulation() if modulation is None else modulation.copy()
-    n_shuffles = (
-        int(df["param_n_shuffles"].iloc[0])
-        if "param_n_shuffles" in df
-        else None
-    )
+    df = load_modulation()
+    n_shuffles = int(df["param_n_shuffles"].iloc[0])
 
     p = df["p"].to_numpy(float)
-    sig = benjamini_hochberg(p, q) if use_fdr else (np.isfinite(p) & (p <= q))
+    sig = benjamini_hochberg(p, q)
     dev = df["dev"].to_numpy(float)
-    df["modulated"] = (
-        sig & (np.isfinite(dev) & (dev >= min_dev)) if min_dev > 0 else sig
-    )
+    df["modulated"] = sig & (np.isfinite(dev) & (dev >= min_dev))
 
     if verbose:
         rule = (
-            f"Benjamini-Hochberg FDR q = {q:g}"
-            if use_fdr
-            else f"raw p <= {q:g}"
+            f"Benjamini-Hochberg FDR q = {q:g}, "
+            f"deviance explained >= {min_dev:g}"
         )
-        if min_dev > 0:
-            rule += f", deviance explained >= {min_dev:g}"
         n_keep = int(df["modulated"].sum())
         print(
             f"2-object modulation ({rule}): {n_keep} of {len(df)} neurons "
             f"({n_keep / len(df):.1%})"
         )
-        if min_dev > 0:
+        print(
+            f"  significance alone would keep {int(sig.sum())}; the deviance floor "
+            f"drops a further {int(sig.sum()) - n_keep}"
+        )
+        floor = 1.0 / (1 + n_shuffles)
+        # Judged on SIGNIFICANCE alone. Testing the final set would make the deviance
+        # floor trigger this: it removes the weakly-driven neurons, which are exactly the
+        # ones with the larger p-values, so the survivors can all sit at the floor while
+        # the significance test itself discriminates perfectly well. More shuffles would
+        # not help in that case, so saying so would be wrong.
+        kept_p = p[sig]
+        if len(kept_p) and np.nanmax(kept_p) <= floor + 1e-12:
             print(
-                f"  significance alone would keep {int(sig.sum())}; the deviance floor "
-                f"drops a further {int(sig.sum()) - n_keep}"
+                f"  ⚠ resolution-limited: every selected neuron sits at the smallest "
+                f"p this cache can produce ({floor:.4f}, from n_shuffles = "
+                f"{n_shuffles}). Rebuild the modulation cache with a larger "
+                f"n_shuffles for a threshold that discriminates."
             )
-        if n_shuffles is not None:
-            floor = 1.0 / (1 + n_shuffles)
-            # Judged on SIGNIFICANCE alone. Testing the final set would make the deviance
-            # floor trigger this: it removes the weakly-driven neurons, which are exactly the
-            # ones with the larger p-values, so the survivors can all sit at the floor while
-            # the significance test itself discriminates perfectly well. More shuffles would
-            # not help in that case, so saying so would be wrong.
-            kept_p = p[sig]
-            if len(kept_p) and np.nanmax(kept_p) <= floor + 1e-12:
-                print(
-                    f"  ⚠ resolution-limited: every selected neuron sits at the smallest "
-                    f"p this cache can produce ({floor:.4f}, from n_shuffles = "
-                    f"{n_shuffles}). Rebuild the modulation cache with a larger "
-                    f"n_shuffles for a threshold that discriminates."
-                )
     return df
 
 
-def passing_units(q=None, use_fdr=None, min_dev=None, verbose=True):
+def passing_units(verbose=True):
     """`subject` / `session` / `unit_id` of every neuron that passes — the population."""
-    df = significance(q=q, use_fdr=use_fdr, min_dev=min_dev, verbose=verbose)
+    df = significance(verbose=verbose)
     return df.loc[df["modulated"], _ID].reset_index(drop=True)
 
 
-def filter_units(
-    frame,
-    unit_col="unit_id",
-    q=None,
-    use_fdr=None,
-    min_dev=None,
-    verbose=True,
-    what="neurons",
-):
+def filter_units(frame, unit_col="unit_id", verbose=True):
     """Keep the rows of `frame` whose neuron passes the criterion.
 
     `unit_col` names the neuron-id column, which is `unit_id` in figure 3's tables and
     `unit` in figure 4's. The join is on (subject, session, that column).
     """
-    keep = passing_units(
-        q=q, use_fdr=use_fdr, min_dev=min_dev, verbose=verbose
-    )
+    keep = passing_units(verbose=verbose)
     if unit_col != "unit_id":
         keep = keep.rename(columns={"unit_id": unit_col})
     before = frame[["subject", "session", unit_col]].drop_duplicates().shape[0]
@@ -231,5 +208,5 @@ def filter_units(
         after = (
             out[["subject", "session", unit_col]].drop_duplicates().shape[0]
         )
-        print(f"  modulation criterion: {before} -> {after} {what}")
+        print(f"  modulation criterion: {before} -> {after} neurons")
     return out.reset_index(drop=True)

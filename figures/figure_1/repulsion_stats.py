@@ -1,4 +1,5 @@
-"""Does the response error depend on the inter-object angle? — the test behind panel (d).
+"""Does the response error depend on the inter-object angle? — the tests behind
+`repulsion_bias.ipynb`.
 
 The figure shows a bias that swings from negative to positive as the non-target crosses from
 one side of the target to the other. Two different claims can be made about it, and they want
@@ -95,7 +96,6 @@ def directed_test(trials):
         p=p,
         p_wilcoxon=p_w,
         n_positive=int((b > 0).sum()),
-        per_session=per,
     )
 
 
@@ -109,14 +109,14 @@ def eta_squared(errors, bins):
     return between / ((errors - grand) ** 2).sum()
 
 
-def omnibus_test(trials, n_perm=10000, seed=0):
+def omnibus_test(trials, n_perm):
     """Does mean error differ across bins? Bin labels permuted **within session**.
 
     Shuffling within session leaves each session's own errors and its own mix of inter-object
     angles untouched, so a session that happens to have both a large mean error and an unusual
     bin composition cannot manufacture the effect.
     """
-    rng = np.random.default_rng(seed)
+    rng = np.random.default_rng(0)
     e = trials["error_deg"].to_numpy(float)
     b = trials["bin"].to_numpy(int)
     session = trials["session"].to_numpy()
@@ -134,15 +134,14 @@ def omnibus_test(trials, n_perm=10000, seed=0):
         eta2=obs,
         p=p,
         n_perm=n_perm,
-        null_mean=null.mean(),
         null_p95=float(np.quantile(null, 0.95)),
     )
 
 
-def report(trials, label, n_perm=10000, seed=0):
+def report(trials, label, n_perm):
     """Both tests for one subject, as printable lines."""
     d = directed_test(trials)
-    o = omnibus_test(trials, n_perm=n_perm, seed=seed)
+    o = omnibus_test(trials, n_perm=n_perm)
     lines = [
         f'{label}: {len(trials):,} trials, {d["n_sessions"]} sessions',
         f'   repulsion   b = {d["slope_deg"]:+.3f}° +/- {d["sem_deg"]:.3f} (SEM over sessions), '

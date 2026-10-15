@@ -1,9 +1,7 @@
 """The one style block, shared by every figure in `figures/`.
 
 `FORMATTING.md`'s rules are a property of the paper, not of any one figure, so they are
-written once here and imported by each directory's `common.py` rather than pasted into all
-seven of them. They had already been pasted into all seven, byte-identical in six and subtly
-different in the seventh — which is exactly how a paper ends up with one panel at 10 pt.
+written once here and imported by each directory's `common.py`.
 """
 
 import config
