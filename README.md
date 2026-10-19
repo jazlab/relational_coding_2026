@@ -1,7 +1,8 @@
 # A Relational Code for Objects in Primate Frontal Cortex
 
 This repository contains the code and points to the data behind the paper
-"A Relational Code for Objects in Primate Frontal Cortex" (Watters et al., 2026). The paper uses neurophysiology data
+["A Relational Code for Objects in Primate Frontal Cortex"](https://doi.org/10.64898/2026.10.17.759839)
+(Watters et al., 2026, bioRxiv). The paper uses neurophysiology data
 recorded in the frontal cortex (DMFC and FEF) of two monkeys, Monkey P (`Perle`)
 and Monkey E (`Elgar`), while they performed a multi-object working memory task.
 It also tests computational models against that data.
@@ -199,5 +200,19 @@ limitations or challenges that might arise.
 ## Reference
 
 If you use our data or code (or a derivative of our data or code) in your work,
-please cite the paper: Watters et al. (2026), "A Relational Code for Objects in
-Primate Frontal Cortex". A BibTeX entry will be added here once it is published.
+please cite the paper:
+
+Watters, N., Gabel, J., Tenenbaum, J. B., & Jazayeri, M. (2026). A Relational Code
+for Objects in Primate Frontal Cortex. *bioRxiv*.
+https://doi.org/10.64898/2026.10.17.759839
+
+```bibtex
+@article{watters2026relational,
+  title   = {A Relational Code for Objects in Primate Frontal Cortex},
+  author  = {Watters, Nicholas and Gabel, Jack and Tenenbaum, Joshua B. and Jazayeri, Mehrdad},
+  journal = {bioRxiv},
+  year    = {2026},
+  doi     = {10.64898/2026.10.17.759839},
+  url     = {https://www.biorxiv.org/content/10.64898/2026.10.17.759839}
+}
+```
