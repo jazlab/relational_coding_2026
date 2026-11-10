@@ -1,13 +1,16 @@
 # Task Visualization
 
 This directory contains tools to visualize the task and behavior of the monkeys.
-There are two entrypoints:
+There are three entrypoints:
 
 - `demo_replay_trial.ipynb`. Run this notebook to generate a gif file replaying
   a list of trials of task and behavior, one after another.
 - `demo_replay_trials_with_neurons.ipynb`. Run this notebook to generate a video
   of trials of task and behavior with audio showing spike times from some
   neurons.
+- `demo_replay_trials_video.ipynb`. Run this notebook to generate the same
+  video as `demo_replay_trials_with_neurons.ipynb`, but without the neurons (no
+  spike raster and no audio), in `videos/`.
 
 Here is the gif `demo_replay_trial.ipynb` makes by default (Monkey P,
 2022-06-11, trials 251, 401, 349, 1156, 402 and 465). The green cross is the
